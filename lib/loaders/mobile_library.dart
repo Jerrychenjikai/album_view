@@ -1,0 +1,181 @@
+import 'dart:io';
+
+import 'package:photo_manager/photo_manager.dart';
+
+import '../models/media_asset.dart';
+import '../models/media_filter.dart';
+import 'image_loader.dart';
+import 'media_probe.dart';
+
+/// System photo library reader shared by the iOS and Android loaders.
+///
+/// Uses the single "all photos" album so items are not duplicated across
+/// user albums. Date bounds in [MediaFilter] are pushed into PhotoManager;
+/// kind, GPS and name filters are applied again in Dart.
+class MobileLibrary {
+  const MobileLibrary();
+
+  Future<List<MediaAsset>> load({MediaFilter filter = const MediaFilter()}) async {
+    final permission = await PhotoManager.requestPermissionExtend();
+    if (!_hasAccess(permission)) {
+      throw const LibraryException('没有相册访问权限。请在系统设置中允许后点重新读取。');
+    }
+
+    final option = FilterOptionGroup(
+      imageOption: const FilterOption(needTitle: true),
+      videoOption: const FilterOption(needTitle: true),
+      createTimeCond: filter.hasDateSpan
+          ? DateTimeCond(
+              min: filter.startInclusive ?? DateTime.fromMillisecondsSinceEpoch(0),
+              max: filter.endInclusive ?? DateTime.now().add(const Duration(days: 3650)),
+            )
+          : null,
+    );
+
+    final albums = await PhotoManager.getAssetPathList(
+      hasAll: true,
+      onlyAll: true,
+      type: RequestType.common,
+      filterOption: option,
+    );
+    if (albums.isEmpty) return const [];
+
+    final album = albums.first;
+    final assets = <MediaAsset>[];
+    const pageSize = 80;
+    var page = 0;
+    while (true) {
+      final chunk = await album.getAssetListPaged(page: page, size: pageSize);
+      if (chunk.isEmpty) break;
+      for (final entity in chunk) {
+        if (entity.type != AssetType.image && entity.type != AssetType.video) continue;
+        final asset = _fromEntity(entity, album.name);
+        if (filter.accepts(asset)) assets.add(asset);
+      }
+      if (chunk.length < pageSize) break;
+      page++;
+    }
+    assets.sort((a, b) => a.createdAt.compareTo(b.createdAt));
+    return assets;
+  }
+
+  MediaAsset _fromEntity(AssetEntity entity, String albumName) {
+    final name = (entity.title == null || entity.title!.trim().isEmpty)
+        ? entity.id
+        : entity.title!.trim();
+    final relative = entity.relativePath?.trim();
+    final String filePath;
+    if (relative != null && relative.isNotEmpty) {
+      filePath = relative.endsWith('/') ? '$relative$name' : '$relative/$name';
+    } else {
+      filePath = name;
+    }
+    final kind = entity.type == AssetType.video ? MediaKind.video : MediaKind.image;
+    final lat = entity.latitude;
+    final lng = entity.longitude;
+    GpsInfo? gps;
+    if (lat != null && lng != null && !(lat == 0 && lng == 0)) {
+      gps = GpsInfo(latitude: lat, longitude: lng);
+    }
+    final created = entity.createDateTime.millisecondsSinceEpoch <= 0
+        ? entity.modifiedDateTime
+        : entity.createDateTime;
+
+    return MediaAsset(
+      id: entity.id,
+      filePath: filePath,
+      fileName: name,
+      kind: kind,
+      mimeType: entity.mimeType,
+      width: entity.width > 0 ? entity.width : null,
+      height: entity.height > 0 ? entity.height : null,
+      rotationDegrees: entity.orientation,
+      duration: kind == MediaKind.video ? entity.videoDuration : null,
+      createdAt: created,
+      modifiedAt: entity.modifiedDateTime,
+      albumName: albumName,
+      gps: gps,
+    );
+  }
+
+  Future<MediaAsset> ensureThumbnail(MediaAsset asset) async {
+    if (asset.thumbnailBytes != null && asset.thumbnailBytes!.isNotEmpty) return asset;
+    final entity = await AssetEntity.fromId(asset.id);
+    if (entity == null) return asset;
+    final bytes = await entity.thumbnailDataWithSize(
+      const ThumbnailSize(480, 480),
+      quality: 72,
+    );
+    if (bytes == null || bytes.isEmpty) return asset;
+    return asset.copyWith(thumbnailBytes: bytes);
+  }
+
+  Future<MediaAsset> ensureDetails(MediaAsset asset) async {
+    final entity = await AssetEntity.fromId(asset.id);
+    if (entity == null) return asset;
+    var next = asset;
+
+    if (next.gps == null) {
+      try {
+        final point = await entity.latlngAsync();
+        if (point != null && !(point.latitude == 0 && point.longitude == 0)) {
+          next = next.copyWith(
+            gps: GpsInfo(latitude: point.latitude, longitude: point.longitude),
+            writeGps: true,
+          );
+        }
+      } catch (_) {}
+    }
+
+    if (next.fileSizeBytes == null) {
+      try {
+        final size = await entity.fileSize;
+        if (size > 0) next = next.copyWith(fileSizeBytes: size);
+      } catch (_) {}
+    }
+
+    if (next.kind == MediaKind.image && next.camera.isEmpty) {
+      try {
+        final file = await entity.originFile;
+        if (file != null && await file.exists()) {
+          final length = await file.length();
+          if (length > 0 && length < 40 * 1024 * 1024) {
+            final headerLength = length < 2 * 1024 * 1024 ? length : 2 * 1024 * 1024;
+            final raf = await file.open();
+            try {
+              final header = await raf.read(headerLength);
+              final extension = '.${file.path.split('.').last}';
+              final probed = await probeHeader(header, extension.isEmpty ? '.jpg' : extension);
+              if (!probed.camera.isEmpty || probed.gps != null) {
+                next = next.copyWith(
+                  camera: probed.camera.isEmpty ? next.camera : probed.camera,
+                  gps: probed.gps ?? next.gps,
+                  width: next.width ?? probed.width,
+                  height: next.height ?? probed.height,
+                  filePath: file.path,
+                  fileName: pBasename(file.path),
+                );
+              } else {
+                next = next.copyWith(filePath: file.path, fileName: pBasename(file.path));
+              }
+            } finally {
+              await raf.close();
+            }
+          }
+        }
+      } catch (_) {}
+    }
+    return next;
+  }
+}
+
+bool _hasAccess(PermissionState state) {
+  return state == PermissionState.authorized || state == PermissionState.limited;
+}
+
+String pBasename(String path) {
+  final normalized = path.replaceAll('\\', '/');
+  final index = normalized.lastIndexOf('/');
+  if (index < 0) return path;
+  return normalized.substring(index + 1);
+}
