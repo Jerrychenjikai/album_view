@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import '../models/media_batch.dart';
 import '../state/album_controller.dart';
 import '../theme/app_theme.dart';
+import '../timeline/resolution_flight.dart';
 import '../timeline/time_resolution.dart';
 import '../timeline/timeline_metrics.dart';
 import 'batch_stack.dart';
@@ -28,7 +29,9 @@ class TimelineBoard extends StatefulWidget {
   State<TimelineBoard> createState() => _TimelineBoardState();
 }
 
-class _TimelineBoardState extends State<TimelineBoard> {
+enum _FlightPhase { out, into }
+
+class _TimelineBoardState extends State<TimelineBoard> with SingleTickerProviderStateMixin {
   final Map<int, Offset> _pointers = {};
   double _travel = 0;
   bool _dragged = false;
@@ -36,6 +39,122 @@ class _TimelineBoardState extends State<TimelineBoard> {
   double? _pinchStartPpd;
   double? _pinchFocalDay;
   double _panZoomScale = 1;
+
+  late final AnimationController _flightClock;
+  ResolutionFlight? _flight;
+  _FlightPhase _phase = _FlightPhase.out;
+  String _prevIds = '';
+  List<MediaBatch>? _prevBatches;
+  double _prevPpd = 1;
+  double _prevResolutionDays = 1;
+  double _poseT = 0;
+  bool _holdInAtZero = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _flightClock = AnimationController(vsync: this)
+      ..addListener(() {
+        if (_holdInAtZero) return;
+        _poseT = _flightClock.value;
+        if (mounted) setState(() {});
+      })
+      ..addStatusListener(_onFlightStatus);
+  }
+
+  @override
+  void dispose() {
+    _flightClock.dispose();
+    super.dispose();
+  }
+
+  @override
+  void didUpdateWidget(TimelineBoard oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final ids = _signature(widget.batches);
+    final ppd = widget.controller.viewport.pixelsPerDay;
+    final days = widget.controller.resolutionFor(widget.trackHeight).days;
+    if (_prevIds.isEmpty) {
+      _remember(ids, ppd, days);
+      return;
+    }
+    if (ids != _prevIds) {
+      final reduce = MediaQuery.disableAnimationsOf(context);
+      final previous = _prevBatches;
+      if (!reduce && previous != null && previous.isNotEmpty && widget.batches.isNotEmpty) {
+        final from = _flight == null ? previous : _visualBatches(ppd);
+        final fromPpd = _flight == null ? _prevPpd : ppd;
+        _begin(planResolutionFlight(
+          from: from,
+          fromPpd: fromPpd,
+          to: widget.batches,
+          toPpd: ppd,
+          coarser: days > _prevResolutionDays + 1e-6,
+        ));
+      } else {
+        _flight = null;
+      }
+    }
+    _remember(ids, ppd, days);
+  }
+
+  void _remember(String ids, double ppd, double days) {
+    _prevIds = ids;
+    _prevBatches = widget.batches;
+    _prevPpd = ppd;
+    _prevResolutionDays = days;
+  }
+
+  String _signature(List<MediaBatch> batches) => batches.map((batch) => batch.id).join('|');
+
+  void _begin(ResolutionFlight flight) {
+    _flight = flight;
+    _phase = _FlightPhase.out;
+    _holdInAtZero = false;
+    _poseT = 0;
+    _flightClock.stop();
+    _flightClock.duration = Duration(milliseconds: flight.outMs);
+    _flightClock.forward(from: 0);
+  }
+
+  void _onFlightStatus(AnimationStatus status) {
+    if (status != AnimationStatus.completed || _flight == null) return;
+    if (_phase == _FlightPhase.out) {
+      final ms = _flight!.inMs;
+      // Paint the fade-out at opacity 0 before the outgoing batches unmount.
+      _poseT = 1;
+      setState(() {});
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted || _flight == null || _phase != _FlightPhase.out) return;
+        _holdInAtZero = true;
+        _poseT = 0;
+        setState(() => _phase = _FlightPhase.into);
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!mounted || _flight == null || _phase != _FlightPhase.into) return;
+          _holdInAtZero = false;
+          _flightClock.duration = Duration(milliseconds: ms);
+          _flightClock.forward(from: 0);
+        });
+      });
+      return;
+    }
+    setState(() => _flight = null);
+  }
+
+  List<MediaBatch> _visualBatches(double ppd) {
+    final flight = _flight;
+    if (flight == null) return _prevBatches ?? widget.batches;
+    final cards = _phase == _FlightPhase.out ? flight.outCards : flight.inCards;
+    return [
+      for (final card in cards)
+        card.batch.copyWith(
+          position: Offset(
+            poseOf(card, _poseT).days * ppd,
+            poseOf(card, _poseT).y,
+          ),
+        ),
+    ];
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -59,6 +178,10 @@ class _TimelineBoardState extends State<TimelineBoard> {
 
     final visualW = TimelineMetrics.cardWidth + TimelineMetrics.fan * 2;
     final visualH = TimelineMetrics.cardHeight + TimelineMetrics.fan;
+    final flight = _flight;
+    final flightCards = flight == null
+        ? const <FlightCard>[]
+        : (_phase == _FlightPhase.out ? flight.outCards : flight.inCards);
 
     return MouseRegion(
       cursor: _pointers.isEmpty ? SystemMouseCursors.grab : SystemMouseCursors.grabbing,
@@ -82,26 +205,92 @@ class _TimelineBoardState extends State<TimelineBoard> {
                 ),
               ),
             ),
-            for (final batch in visible)
-              Positioned(
-                left: batch.position.dx - scroll - visualW / 2,
-                top: TimelineMetrics.rulerHeight + batch.position.dy - visualH / 2,
-                width: visualW,
-                height: visualH,
-                child: BatchStack(
+            if (flight == null)
+              for (final batch in visible)
+                _placedBatch(
+                  key: ValueKey(batch.id),
                   batch: batch,
+                  left: batch.position.dx - scroll - visualW / 2,
+                  top: TimelineMetrics.rulerHeight + batch.position.dy - visualH / 2,
+                  width: visualW,
+                  height: visualH,
+                  opacity: 1,
+                  scale: 1,
                   onTap: () => _handleTap(batch),
-                ),
-              ),
+                )
+            else
+              for (final card in flightCards)
+                if (_flightOnScreen(card, scroll, ppd, widget.viewWidth))
+                  _placedBatch(
+                    key: ValueKey(card.batch.id),
+                    batch: card.batch,
+                    left: poseOf(card, _poseT).days * ppd - scroll - visualW / 2,
+                    top: TimelineMetrics.rulerHeight + poseOf(card, _poseT).y - visualH / 2,
+                    width: visualW,
+                    height: visualH,
+                    opacity: poseOf(card, _poseT).opacity,
+                    scale: poseOf(card, _poseT).scale,
+                    onTap: () {},
+                  ),
           ],
         ),
       ),
     );
   }
 
+  Widget _placedBatch({
+    required Key key,
+    required MediaBatch batch,
+    required double left,
+    required double top,
+    required double width,
+    required double height,
+    required double opacity,
+    required double scale,
+    required VoidCallback onTap,
+  }) {
+    final shown = opacity.clamp(0.0, 1.0).toDouble();
+    return Positioned(
+      key: key,
+      left: left,
+      top: top,
+      width: width,
+      height: height,
+      child: IgnorePointer(
+        ignoring: shown < 0.05,
+        child: Opacity(
+          opacity: shown,
+          child: Transform.scale(
+            scale: scale,
+            child: BatchStack(batch: batch, onTap: onTap),
+          ),
+        ),
+      ),
+    );
+  }
+
+  bool _flightOnScreen(FlightCard card, double scroll, double ppd, double width) {
+    final pose = poseOf(card, _poseT);
+    final screen = pose.days * ppd - scroll;
+    final margin = TimelineMetrics.footprintWidth * 1.6;
+    if (screen < -margin || screen > width + margin) return false;
+    // Fade-out stays mounted until the phase ends, even at opacity 0,
+    // so the removal pop happens while the card is already invisible.
+    if (_phase == _FlightPhase.out) return true;
+    return true;
+  }
+
   void _handleTap(MediaBatch batch) {
-    if (_dragged) return;
-    widget.controller.openBatch(batch);
+    if (_dragged || _flight != null) return;
+    final box = context.findRenderObject() as RenderBox?;
+    Offset? origin;
+    if (box != null && box.hasSize) {
+      origin = box.localToGlobal(Offset(
+        batch.position.dx - widget.controller.viewport.scrollX,
+        TimelineMetrics.rulerHeight + batch.position.dy,
+      ));
+    }
+    widget.controller.openBatch(batch, origin: origin);
   }
 
   void _onPointerDown(PointerDownEvent event) {
@@ -126,7 +315,7 @@ class _TimelineBoardState extends State<TimelineBoard> {
     _travel += delta.distance;
     if (!_dragged && _travel < 8) return;
     _dragged = true;
-    widget.controller.panBy(delta.dx);
+    widget.controller.panBy(delta.dx, viewWidth: widget.viewWidth);
   }
 
   void _onPointerUp(PointerEvent event) {
@@ -179,7 +368,7 @@ class _TimelineBoardState extends State<TimelineBoard> {
 
   void _onPanZoomUpdate(PointerPanZoomUpdateEvent event) {
     if (event.panDelta.dx != 0) {
-      widget.controller.panBy(event.panDelta.dx);
+      widget.controller.panBy(event.panDelta.dx, viewWidth: widget.viewWidth);
       _dragged = true;
     }
     if (event.scale <= 0) return;

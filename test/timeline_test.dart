@@ -1,12 +1,12 @@
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:lighttable/loaders/media_probe.dart';
-import 'package:lighttable/models/media_asset.dart';
-import 'package:lighttable/models/media_filter.dart';
-import 'package:lighttable/timeline/day_timeline_layout.dart';
-import 'package:lighttable/timeline/timeline_metrics.dart';
-import 'package:lighttable/timeline/timeline_viewport.dart';
+import 'package:album_viewer/loaders/media_probe.dart';
+import 'package:album_viewer/models/media_asset.dart';
+import 'package:album_viewer/models/media_filter.dart';
+import 'package:album_viewer/timeline/day_timeline_layout.dart';
+import 'package:album_viewer/timeline/timeline_metrics.dart';
+import 'package:album_viewer/timeline/timeline_viewport.dart';
 
 MediaAsset _asset(String id, DateTime at, {MediaKind kind = MediaKind.image, GpsInfo? gps, String album = 'roll'}) {
   return MediaAsset(

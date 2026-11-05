@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:math' as math;
 import 'dart:ui' show ImageFilter;
@@ -13,6 +14,7 @@ import '../timeline/day_number.dart';
 class BatchPreview extends StatefulWidget {
   final List<MediaAsset> items;
   final int rows;
+  final Offset? originGlobal;
   final VoidCallback onClose;
 
   const BatchPreview({
@@ -20,14 +22,14 @@ class BatchPreview extends StatefulWidget {
     required this.items,
     required this.rows,
     required this.onClose,
+    this.originGlobal,
   });
 
   @override
   State<BatchPreview> createState() => _BatchPreviewState();
 }
 
-class _BatchPreviewState extends State<BatchPreview> {
-  final ScrollController _scroll = ScrollController();
+class _BatchPreviewState extends State<BatchPreview> with SingleTickerProviderStateMixin {
   final Map<String, GlobalKey> _keys = {};
   final Map<int, Offset> _pointers = {};
   final Set<String> _flipped = {};
@@ -39,14 +41,151 @@ class _BatchPreviewState extends State<BatchPreview> {
   Offset _pan = Offset.zero;
   _Pinch? _pinch;
   Size _card = const Size(180, 220);
+  double _offset = 0;
+  double _maxOffset = 0;
+  double _zoomOpacity = 0;
+  Timer? _zoomDismiss;
+  Timer? _zoomIdle;
+  late final AnimationController _spread;
+  bool _closing = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _spread = AnimationController(vsync: this, duration: const Duration(milliseconds: 560))
+      ..addListener(() {
+        if (mounted) setState(() {});
+      });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      if (MediaQuery.disableAnimationsOf(context)) {
+        _spread.value = 1;
+      } else {
+        _spread.forward();
+      }
+    });
+  }
 
   @override
   void dispose() {
-    _scroll.dispose();
+    _zoomDismiss?.cancel();
+    _zoomIdle?.cancel();
+    _spread.dispose();
     super.dispose();
   }
 
   GlobalKey _keyFor(String id) => _keys.putIfAbsent(id, GlobalKey.new);
+
+  Offset _localOrigin(BoxConstraints constraints) {
+    final global = widget.originGlobal;
+    final box = context.findRenderObject() as RenderBox?;
+    if (global == null || box == null || !box.hasSize) {
+      return Offset(constraints.maxWidth / 2, constraints.maxHeight / 2);
+    }
+    return box.globalToLocal(global);
+  }
+
+  bool _showCard(int index, int rows, double stride, double cardW, double offset, double width, double t) {
+    final col = index ~/ rows;
+    final x = 28 + col * stride + cardW / 2 - offset;
+    final onScreen = x > -cardW * 1.4 && x < width + cardW * 1.4;
+    if (onScreen) return true;
+    return t < 0.98 && index < rows * 6;
+  }
+
+  Widget _placedCard({
+    required int index,
+    required int rows,
+    required double stride,
+    required double cardW,
+    required double cardH,
+    required double gap,
+    required double gridH,
+    required double offset,
+    required Offset origin,
+    required double t,
+    required BoxConstraints constraints,
+  }) {
+    final asset = widget.items[index];
+    final col = index ~/ rows;
+    final row = index % rows;
+    final target = Offset(
+      28 + col * stride + cardW / 2 - offset,
+      (constraints.maxHeight - gridH) / 2 + row * (cardH + gap) + cardH / 2,
+    );
+    final depth = math.min(3, math.max(0, widget.items.length - 1 - index));
+    final fan = Offset(depth == 0 ? 0 : -depth * 7.0, depth * 5.0);
+    final center = Offset.lerp(origin + fan, target, t)!;
+    final w = _lerp(142, cardW, t);
+    final h = _lerp(172, cardH, t);
+    final hidden = _zoomId == asset.id && _zoomOpacity > 0.35;
+    // Invisible at the first moment so the new cards can mount, then fade in.
+    // On the way out, opacity is already 0 before the overlay is removed.
+    final fade = hidden ? 0.0 : ((t - 0.02) / 0.4).clamp(0.0, 1.0).toDouble();
+    return Positioned(
+      left: center.dx - w / 2,
+      top: center.dy - h / 2,
+      width: w,
+      height: h,
+      child: IgnorePointer(
+        ignoring: fade < 0.04,
+        child: Opacity(
+          opacity: fade,
+          child: SizedBox(
+            key: _keyFor(asset.id),
+            width: w,
+            height: h,
+            child: _Polaroid(
+              asset: asset,
+              flipped: _flipped.contains(asset.id),
+              caption: _frontCaption(asset),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  double _lerp(double a, double b, double t) => a + (b - a) * t;
+
+  void _keepZoom() {
+    _zoomIdle?.cancel();
+    _zoomDismiss?.cancel();
+  }
+
+  void _armZoomEnd() {
+    _zoomIdle?.cancel();
+    _zoomIdle = Timer(const Duration(milliseconds: 140), _dismissZoom);
+  }
+
+  void _dismissZoom() {
+    if (_zoomId == null) return;
+    setState(() => _zoomOpacity = 0);
+    _zoomDismiss?.cancel();
+    _zoomDismiss = Timer(const Duration(milliseconds: 180), () {
+      if (!mounted) return;
+      setState(() {
+        _zoomId = null;
+        _scale = 1;
+        _pan = Offset.zero;
+        _zoomOpacity = 0;
+      });
+    });
+  }
+
+  void _requestClose() {
+    if (_closing) return;
+    _closing = true;
+    _zoomIdle?.cancel();
+    _zoomDismiss?.cancel();
+    if (MediaQuery.disableAnimationsOf(context) || _spread.value <= 0.02) {
+      widget.onClose();
+      return;
+    }
+    _spread.reverse().whenComplete(() {
+      if (mounted) widget.onClose();
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -54,15 +193,17 @@ class _BatchPreviewState extends State<BatchPreview> {
     return LayoutBuilder(
       builder: (context, constraints) {
         final gap = 16.0;
-        final pad = 36.0;
-        final cardH = ((constraints.maxHeight - pad - gap * (rows - 1)) / rows).clamp(120.0, 440.0);
+        final cardH = ((constraints.maxHeight - 36 - gap * (rows - 1)) / rows).clamp(120.0, 440.0).toDouble();
         final cardW = cardH * 142 / 172;
         _card = Size(cardW, cardH);
-        final columns = <List<MediaAsset>>[];
-        for (var i = 0; i < widget.items.length; i += rows) {
-          final end = math.min(i + rows, widget.items.length);
-          columns.add(widget.items.sublist(i, end));
-        }
+        final stride = cardW + 20;
+        final columnCount = (widget.items.length / rows).ceil();
+        final gridH = rows * cardH + (rows - 1) * gap;
+        _maxOffset = math.max(0.0, 36 + columnCount * stride - constraints.maxWidth);
+        final offset = _offset.clamp(0.0, _maxOffset);
+        final t = Curves.easeOutCubic.transform(_spread.value.clamp(0.0, 1.0));
+        final origin = _localOrigin(constraints);
+        final veil = (179 * t).round().clamp(0, 255);
 
         return Listener(
           behavior: HitTestBehavior.opaque,
@@ -73,56 +214,44 @@ class _BatchPreviewState extends State<BatchPreview> {
           onPointerSignal: _signal,
           child: ClipRect(
             child: BackdropFilter(
-              filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
+              filter: ImageFilter.blur(sigmaX: 18 * t, sigmaY: 18 * t),
               child: ColoredBox(
-                color: const Color(0xB31A1612),
+                color: Color.fromARGB(veil, 0x1A, 0x16, 0x12),
                 child: Stack(
                   children: [
-                    Positioned.fill(
-                      child: ListView(
-                        controller: _scroll,
-                        scrollDirection: Axis.horizontal,
-                        physics: const NeverScrollableScrollPhysics(),
-                        padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 18),
-                        children: [
-                          for (final column in columns)
-                            Padding(
-                              padding: const EdgeInsets.symmetric(horizontal: 10),
-                              child: SizedBox(
-                                height: math.max(120, constraints.maxHeight - 36),
-                                child: Column(
-                                mainAxisAlignment: MainAxisAlignment.center,
-                                children: [
-                                  for (var i = 0; i < column.length; i++) ...[
-                                    if (i > 0) const SizedBox(height: 16),
-                                    SizedBox(
-                                      key: _keyFor(column[i].id),
-                                      width: cardW,
-                                      height: cardH,
-                                      child: _Polaroid(
-                                        asset: column[i],
-                                        flipped: _flipped.contains(column[i].id),
-                                        caption: _frontCaption(column[i]),
-                                      ),
-                                    ),
-                                  ],
-                                ],
-                                ),
-                              ),
-                            ),
-                        ],
+                    for (var index = 0; index < widget.items.length; index++)
+                      if (_showCard(index, rows, stride, cardW, offset, constraints.maxWidth, t))
+                        _placedCard(
+                          index: index,
+                          rows: rows,
+                          stride: stride,
+                          cardW: cardW,
+                          cardH: cardH,
+                          gap: gap,
+                          gridH: gridH,
+                          offset: offset,
+                          origin: origin,
+                          t: t,
+                          constraints: constraints,
+                        ),
+                    if (_zoomId != null)
+                      AnimatedOpacity(
+                        opacity: _zoomOpacity,
+                        duration: const Duration(milliseconds: 160),
+                        child: _zoomed(cardW, cardH),
                       ),
-                    ),
-                    if (_zoomId != null) _zoomed(cardW, cardH),
-                    const Positioned(
+                    Positioned(
                       left: 0,
                       right: 0,
                       bottom: 14,
                       child: IgnorePointer(
-                        child: Text(
-                          '点一张翻到背面    双指或滚轮放大    点空白返回',
-                          textAlign: TextAlign.center,
-                          style: TextStyle(color: DeskColors.muted, fontSize: 12),
+                        child: Opacity(
+                          opacity: t,
+                          child: const Text(
+                            '点一张翻到背面    双指或滚轮放大    点空白返回',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(color: DeskColors.muted, fontSize: 12),
+                          ),
                         ),
                       ),
                     ),
@@ -201,12 +330,17 @@ class _BatchPreviewState extends State<BatchPreview> {
       _pinch = null;
     }
     if (_pointers.length == 2) {
+      if (_spread.value < 0.98) return;
       final points = _pointers.values.toList();
       final dist = math.max(12.0, (points[0] - points[1]).distance);
       final id = _hit(points[0]) ?? _hit(points[1]);
       if (id != null) {
+        _keepZoom();
         _pinch = _Pinch(id: id, dist: dist, scale: _zoomId == id ? _scale : 1, pan: _zoomId == id ? _pan : Offset.zero);
-        setState(() => _zoomId = id);
+        setState(() {
+          _zoomId = id;
+          _zoomOpacity = 1;
+        });
       }
     }
   }
@@ -221,13 +355,16 @@ class _BatchPreviewState extends State<BatchPreview> {
       final points = _pointers.values.toList();
       final dist = math.max(12.0, (points[0] - points[1]).distance);
       final scale = (_pinch!.scale * dist / _pinch!.dist).clamp(1.0, 5.0);
+      _keepZoom();
       setState(() {
         _zoomId = _pinch!.id;
-        _scale = scale;
+        _scale = scale <= 1.02 ? 1 : scale;
         _pan = _pinch!.pan;
+        _zoomOpacity = scale <= 1.02 ? 0 : 1;
         if (_scale <= 1.02) {
           _scale = 1;
           _pan = Offset.zero;
+          _zoomId = null;
         }
       });
       _dragged = true;
@@ -235,26 +372,29 @@ class _BatchPreviewState extends State<BatchPreview> {
     }
     if (!_dragged && _travel < 8) return;
     _dragged = true;
-    if (_zoomId != null && _scale > 1 && _insideZoom(previous)) {
+    if (_zoomId != null && _zoomOpacity > 0.4 && _scale > 1 && _insideZoom(previous)) {
       setState(() => _pan += delta);
       return;
     }
-    if (!_scroll.hasClients) return;
-    final next = (_scroll.offset - delta.dx).clamp(0.0, _scroll.position.maxScrollExtent);
-    _scroll.jumpTo(next);
+    setState(() {
+      _offset = (_offset - delta.dx).clamp(0.0, _maxOffset);
+    });
   }
 
   void _up(PointerEvent event) {
+    final endedPinch = _pinch != null;
     final wasDrag = _dragged || _travel >= 8;
     _pointers.remove(event.pointer);
     if (_pointers.length < 2) _pinch = null;
+    if (endedPinch && _pointers.length < 2 && _zoomId != null && _scale > 1) _armZoomEnd();
+    if (_spread.value < 0.98) return;
     if (wasDrag || _pointers.isNotEmpty) return;
     final id = _hit(event.position);
     if (id == null) {
-      widget.onClose();
+      _requestClose();
       return;
     }
-    if (_zoomId == id && _scale > 1) return;
+    if (_zoomId == id && _scale > 1 && _zoomOpacity > 0.4) return;
     setState(() {
       if (_flipped.contains(id)) {
         _flipped.remove(id);
@@ -266,20 +406,27 @@ class _BatchPreviewState extends State<BatchPreview> {
 
   void _signal(PointerSignalEvent event) {
     if (event is! PointerScrollEvent) return;
+    if (_spread.value < 0.98) return;
     final id = _hit(event.position);
     if (id == null) {
-      if (!_scroll.hasClients) return;
-      final next = (_scroll.offset + event.scrollDelta.dy).clamp(0.0, _scroll.position.maxScrollExtent);
-      _scroll.jumpTo(next);
+      setState(() {
+        _offset = (_offset + event.scrollDelta.dy).clamp(0.0, _maxOffset);
+      });
       return;
     }
     final base = _zoomId == id ? _scale : 1.0;
     final scale = (base * math.exp(-event.scrollDelta.dy * 0.0016)).clamp(1.0, 5.0);
+    if (scale <= 1.02) {
+      _dismissZoom();
+      return;
+    }
+    _keepZoom();
     setState(() {
-      _zoomId = scale <= 1.02 ? null : id;
-      _scale = scale <= 1.02 ? 1 : scale;
-      if (_scale == 1) _pan = Offset.zero;
+      _zoomId = id;
+      _scale = scale;
+      _zoomOpacity = 1;
     });
+    _armZoomEnd();
   }
 }
 

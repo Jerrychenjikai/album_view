@@ -46,6 +46,7 @@ class BatchStack extends StatelessWidget {
                 depthFromTop: layers.length - 1 - i,
                 baseRotation: batch.rotation,
                 caption: _caption(batch),
+                city: batch.dominantCity,
                 showCaption: layers[i] == top,
               ),
           ],
@@ -67,6 +68,7 @@ class _Print extends StatelessWidget {
   final int depthFromTop;
   final double baseRotation;
   final String caption;
+  final String? city;
   final bool showCaption;
 
   const _Print({
@@ -74,6 +76,7 @@ class _Print extends StatelessWidget {
     required this.depthFromTop,
     required this.baseRotation,
     required this.caption,
+    required this.city,
     required this.showCaption,
   });
 
@@ -107,19 +110,36 @@ class _Print extends StatelessWidget {
               Expanded(child: ClipRect(child: _Preview(asset: asset))),
               const SizedBox(height: 6),
               SizedBox(
-                height: 16,
+                height: 28,
+                width: double.infinity,
                 child: showCaption
-                    ? Text(
-                        caption,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          color: DeskColors.ink,
-                          fontSize: 11,
-                          height: 1.2,
-                          fontWeight: FontWeight.w600,
-                          letterSpacing: 0.2,
-                        ),
+                    ? Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            caption,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              color: DeskColors.ink,
+                              fontSize: 11,
+                              height: 1.15,
+                              fontWeight: FontWeight.w600,
+                              letterSpacing: 0.2,
+                            ),
+                          ),
+                          Text(
+                            city ?? '',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              color: Color(0xFF6E6558),
+                              fontSize: 10,
+                              height: 1.2,
+                              fontWeight: FontWeight.w500,
+                            ),
+                          ),
+                        ],
                       )
                     : const SizedBox.shrink(),
               ),

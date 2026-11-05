@@ -11,9 +11,10 @@ class TimelineViewport {
   double scrollX;
 
   TimelineViewport({
-    this.pixelsPerDay = defaultPixelsPerDay,
-    this.scrollX = 0,
-  });
+    double pixelsPerDay = defaultPixelsPerDay,
+    double? scrollX,
+  })  : pixelsPerDay = pixelsPerDay,
+        scrollX = scrollX ?? timeDays(DateTime.now()) * pixelsPerDay;
 
   static double get maxPixelsPerDay => TimeScale.maxPixelsPerDay;
 
@@ -45,4 +46,36 @@ class TimelineViewport {
     pixelsPerDay = next;
     scrollX = focalDays * pixelsPerDay - focalScreenX;
   }
+}
+
+/// Keeps the viewport over the photos. Sliding past the first or last
+/// photo — where nothing new would enter — is not allowed.
+///
+/// When the whole span fits, the range collapses to a single centered offset.
+double clampTimelineScroll({
+  required double scrollX,
+  required double pixelsPerDay,
+  required double viewWidth,
+  required Iterable<double> dayMarks,
+  double edgePad = 0,
+  double inset = 32,
+}) {
+  if (viewWidth <= 0 || pixelsPerDay <= 0) return scrollX;
+  double? minDays;
+  double? maxDays;
+  for (final day in dayMarks) {
+    if (minDays == null || day < minDays) minDays = day;
+    if (maxDays == null || day > maxDays) maxDays = day;
+  }
+  if (minDays == null || maxDays == null) return scrollX;
+  final left = minDays * pixelsPerDay - edgePad;
+  final right = maxDays * pixelsPerDay + edgePad;
+  final lo = left - inset;
+  final hi = right - viewWidth + inset;
+  if (hi <= lo) {
+    return (left + right) / 2 - viewWidth / 2;
+  }
+  if (scrollX < lo) return lo;
+  if (scrollX > hi) return hi;
+  return scrollX;
 }

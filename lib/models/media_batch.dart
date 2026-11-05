@@ -52,6 +52,25 @@ class MediaBatch {
     return DateTime(local.year, local.month, local.day);
   }
 
+  /// City that appears most often in this stack. Street and region are dropped.
+  String? get dominantCity {
+    final counts = <String, int>{};
+    for (final item in items) {
+      final city = item.gps?.cityName;
+      if (city == null || city.isEmpty) continue;
+      counts[city] = (counts[city] ?? 0) + 1;
+    }
+    String? best;
+    var bestCount = 0;
+    for (final entry in counts.entries) {
+      if (entry.value > bestCount) {
+        best = entry.key;
+        bestCount = entry.value;
+      }
+    }
+    return best;
+  }
+
   MediaBatch copyWith({
     List<MediaAsset>? items,
     Offset? position,

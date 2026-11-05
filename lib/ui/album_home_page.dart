@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -46,8 +47,10 @@ class _AlbumHomePageState extends State<AlbumHomePage> {
         const SingleActivator(LogicalKeyboardKey.equal): () => _zoom(1.18),
         const SingleActivator(LogicalKeyboardKey.numpadAdd): () => _zoom(1.18),
         const SingleActivator(LogicalKeyboardKey.numpadSubtract): () => _zoom(1 / 1.18),
-        const SingleActivator(LogicalKeyboardKey.arrowLeft): () => controller.panBy(-120),
-        const SingleActivator(LogicalKeyboardKey.arrowRight): () => controller.panBy(120),
+        const SingleActivator(LogicalKeyboardKey.arrowLeft): () =>
+            controller.panBy(-120, viewWidth: MediaQuery.sizeOf(context).width),
+        const SingleActivator(LogicalKeyboardKey.arrowRight): () =>
+            controller.panBy(120, viewWidth: MediaQuery.sizeOf(context).width),
         const SingleActivator(LogicalKeyboardKey.escape): controller.closePreview,
       },
       child: Focus(
@@ -92,6 +95,7 @@ class _AlbumHomePageState extends State<AlbumHomePage> {
                         child: BatchPreview(
                           items: controller.previewItems,
                           rows: TimelineMetrics.laneCount(_track),
+                          originGlobal: controller.previewOrigin,
                           onClose: controller.closePreview,
                         ),
                       ),
@@ -109,6 +113,8 @@ class _AlbumHomePageState extends State<AlbumHomePage> {
   }
 
   Future<void> _editFolder() async {
+    final mobile = defaultTargetPlatform == TargetPlatform.iOS || defaultTargetPlatform == TargetPlatform.android;
+    if (mobile || !controller.loader.canConfigureFolder) return;
     final stored = await controller.loader.storedImagePath();
     if (!mounted) return;
     final field = TextEditingController(text: stored ?? '');
@@ -172,6 +178,8 @@ class _Toolbar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final resolution = controller.resolutionFor(track);
+    final mobile = defaultTargetPlatform == TargetPlatform.iOS || defaultTargetPlatform == TargetPlatform.android;
+    final allowFolder = controller.loader.canConfigureFolder && !mobile;
     return Container(
       padding: const EdgeInsets.fromLTRB(16, 8, 8, 8),
       decoration: const BoxDecoration(
@@ -193,7 +201,7 @@ class _Toolbar extends StatelessWidget {
                 label: '今天',
                 onPressed: () => controller.revealToday(MediaQuery.sizeOf(context).width),
               ),
-              if (controller.loader.canConfigureFolder)
+              if (allowFolder)
                 _IconButton(tooltip: '照片文件夹', label: '来源', onPressed: onFolder),
             ],
           ),

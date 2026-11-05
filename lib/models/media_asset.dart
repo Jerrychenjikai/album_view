@@ -1,3 +1,4 @@
+import 'dart:math' as math;
 import 'dart:typed_data';
 
 enum MediaKind { image, video }
@@ -91,18 +92,98 @@ class GpsInfo {
   final double longitude;
   final double? altitude;
 
+  /// City, or a longer place string. Only the city is shown on a batch.
+  final String? city;
+
   const GpsInfo({
     required this.latitude,
     required this.longitude,
     this.altitude,
+    this.city,
   });
 
   String get label {
+    final named = cityName;
+    if (named != null) return named;
     final lat = latitude.toStringAsFixed(5);
     final lng = longitude.toStringAsFixed(5);
     if (altitude == null) return '$lat, $lng';
     return '$lat, $lng  ·  ${altitude!.toStringAsFixed(0)} m';
   }
+
+  /// City only. A stored "street, city, region" keeps the city token.
+  String? get cityName {
+    final named = city?.trim();
+    if (named != null && named.isNotEmpty) return cityToken(named);
+    return nearestCity(latitude, longitude);
+  }
+}
+
+/// First non-street, non-region piece of a place string.
+String? cityToken(String raw) {
+  final parts = raw.split(RegExp(r'[,，]')).map((part) => part.trim()).where((part) => part.isNotEmpty);
+  const admin = {
+    'canada',
+    'ontario',
+    'quebec',
+    '中国',
+    '美国',
+    '加拿大',
+    '安大略',
+    'usa',
+    'uk',
+    'china',
+  };
+  for (final part in parts) {
+    if (RegExp(r'\d').hasMatch(part)) continue;
+    if (admin.contains(part.toLowerCase())) continue;
+    if (RegExp(r'(street|st\.|avenue|ave\.|road|rd\.|路|街|道)$', caseSensitive: false).hasMatch(part)) {
+      continue;
+    }
+    return part;
+  }
+  return null;
+}
+
+const List<({String name, double lat, double lng})> _knownCities = [
+  (name: '多伦多', lat: 43.6532, lng: -79.3832),
+  (name: '密西沙加', lat: 43.5890, lng: -79.6441),
+  (name: '纽马克特', lat: 44.0592, lng: -79.4613),
+  (name: '巴里', lat: 44.3894, lng: -79.6903),
+  (name: '彼得伯勒', lat: 44.3091, lng: -78.3197),
+  (name: '金斯顿', lat: 44.2312, lng: -76.4860),
+  (name: '渥太华', lat: 45.4215, lng: -75.6972),
+  (name: '蒙特利尔', lat: 45.5017, lng: -73.5673),
+  (name: '温哥华', lat: 49.2827, lng: -123.1207),
+  (name: '北京', lat: 39.9042, lng: 116.4074),
+  (name: '上海', lat: 31.2304, lng: 121.4737),
+  (name: '东京', lat: 35.6762, lng: 139.6503),
+  (name: '纽约', lat: 40.7128, lng: -74.0060),
+  (name: '伦敦', lat: 51.5074, lng: -0.1278),
+  (name: '巴黎', lat: 48.8566, lng: 2.3522),
+];
+
+String? nearestCity(double latitude, double longitude) {
+  String? best;
+  var bestKm = 80.0;
+  for (final city in _knownCities) {
+    final km = _haversineKm(latitude, longitude, city.lat, city.lng);
+    if (km < bestKm) {
+      bestKm = km;
+      best = city.name;
+    }
+  }
+  return best;
+}
+
+double _haversineKm(double lat1, double lng1, double lat2, double lng2) {
+  const earth = 6371.0;
+  final r1 = lat1 * math.pi / 180;
+  final r2 = lat2 * math.pi / 180;
+  final dLat = (lat2 - lat1) * math.pi / 180;
+  final dLng = (lng2 - lng1) * math.pi / 180;
+  final h = math.pow(math.sin(dLat / 2), 2) + math.cos(r1) * math.cos(r2) * math.pow(math.sin(dLng / 2), 2);
+  return 2 * earth * math.asin(math.min(1, math.sqrt(h.toDouble())));
 }
 
 /// One still or one video on disk / in the system photo library.

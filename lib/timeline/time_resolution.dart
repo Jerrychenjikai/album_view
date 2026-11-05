@@ -1,38 +1,39 @@
 import 'timeline_metrics.dart';
+import 'day_number.dart';
 
 /// How photos are gathered into one batch.
 ///
-/// Finest is an hour. Coarser than a year, the span grows by three years
-/// (3, 6, 9, …) until a single screen can hold the whole library.
-enum TimeUnit { hour, day, week, month, year, years }
+/// From fine to coarse: hour, multiples of 3 hours, day, 3 days, week,
+/// 2 weeks, month, multiples of 3 months, year, then multiples of 3 years.
+enum TimeUnit { hour, hours, day, days, week, weeks, month, months, year, years }
 
 class TimeResolution {
   final TimeUnit unit;
   final String label;
   final double days;
 
-  /// Set for [TimeUnit.years]: 3, 6, 9, …
-  final int spanYears;
+  /// Hour step, day length, month length, or year span.
+  final int step;
 
   const TimeResolution({
     required this.unit,
     required this.label,
     required this.days,
-    this.spanYears = 0,
+    this.step = 1,
   });
 
-  static const hour = TimeResolution(unit: TimeUnit.hour, label: '时', days: 1 / 24);
-  static const day = TimeResolution(unit: TimeUnit.day, label: '日', days: 1);
-  static const week = TimeResolution(unit: TimeUnit.week, label: '周', days: 7);
-  static const month = TimeResolution(unit: TimeUnit.month, label: '月', days: 30.436875);
-  static const year = TimeResolution(unit: TimeUnit.year, label: '年', days: 365.2425);
+  static const hour = TimeResolution(unit: TimeUnit.hour, label: '时', days: 1 / 24, step: 1);
+  static const day = TimeResolution(unit: TimeUnit.day, label: '日', days: 1, step: 1);
+  static const week = TimeResolution(unit: TimeUnit.week, label: '周', days: 7, step: 7);
+  static const month = TimeResolution(unit: TimeUnit.month, label: '月', days: 30.436875, step: 1);
+  static const year = TimeResolution(unit: TimeUnit.year, label: '年', days: 365.2425, step: 1);
 
   static TimeResolution years(int span) {
     return TimeResolution(
       unit: TimeUnit.years,
       label: '$span年',
       days: 365.2425 * span,
-      spanYears: span,
+      step: span,
     );
   }
 }
@@ -74,11 +75,23 @@ class TimeScale {
 
   static double get maxPixelsPerDay => maxHourPx * 24;
 
-  static const List<TimeResolution> _base = [
+  static const List<TimeResolution> _ladder = [
     TimeResolution.hour,
+    TimeResolution(unit: TimeUnit.hours, label: '3时', days: 3 / 24, step: 3),
+    TimeResolution(unit: TimeUnit.hours, label: '6时', days: 6 / 24, step: 6),
+    TimeResolution(unit: TimeUnit.hours, label: '9时', days: 9 / 24, step: 9),
+    TimeResolution(unit: TimeUnit.hours, label: '12时', days: 12 / 24, step: 12),
+    TimeResolution(unit: TimeUnit.hours, label: '15时', days: 15 / 24, step: 15),
+    TimeResolution(unit: TimeUnit.hours, label: '18时', days: 18 / 24, step: 18),
+    TimeResolution(unit: TimeUnit.hours, label: '21时', days: 21 / 24, step: 21),
     TimeResolution.day,
+    TimeResolution(unit: TimeUnit.days, label: '3日', days: 3, step: 3),
     TimeResolution.week,
+    TimeResolution(unit: TimeUnit.weeks, label: '2周', days: 14, step: 14),
     TimeResolution.month,
+    TimeResolution(unit: TimeUnit.months, label: '3月', days: 30.436875 * 3, step: 3),
+    TimeResolution(unit: TimeUnit.months, label: '6月', days: 30.436875 * 6, step: 6),
+    TimeResolution(unit: TimeUnit.months, label: '9月', days: 30.436875 * 9, step: 9),
     TimeResolution.year,
   ];
 
@@ -92,7 +105,7 @@ class TimeScale {
   static TimeResolution resolutionFor(double pixelsPerDay, double trackCrossExtent) {
     final ppd = pixelsPerDay <= 0 ? 1e-9 : pixelsPerDay;
     final need = laneSpacing(trackCrossExtent) / ppd;
-    for (final item in _base) {
+    for (final item in _ladder) {
       if (item.days + 1e-9 >= need) return item;
     }
     var span = 3;
@@ -143,11 +156,17 @@ TimeBucket bucketFor(DateTime time, TimeResolution resolution) {
   final t = time;
   switch (resolution.unit) {
     case TimeUnit.hour:
-      final start = DateTime(t.year, t.month, t.day, t.hour);
+    case TimeUnit.hours:
+      final step = resolution.step <= 0 ? 1 : resolution.step;
+      final startHour = t.hour - _mod(t.hour, step);
+      final start = DateTime(t.year, t.month, t.day, startHour);
+      final end = start.add(Duration(hours: step));
+      final endHour = (startHour + step) % 24;
+      final endLabel = endHour == 0 ? '24' : _two(endHour);
       return TimeBucket(
-        id: '${_stamp(start)}T${_two(t.hour)}',
-        label: '${t.month}月${t.day}日 ${_two(t.hour)}:00',
-        centerDays: timeDays(start) + 0.5 / 24,
+        id: step == 1 ? '${_stamp(start)}T${_two(startHour)}' : '${_stamp(start)}T${_two(startHour)}x$step',
+        label: step == 1 ? '${t.month}月${t.day}日 ${_two(startHour)}:00' : '${t.day}日 ${_two(startHour)}–$endLabel',
+        centerDays: (timeDays(start) + timeDays(end)) / 2,
       );
     case TimeUnit.day:
       final start = DateTime(t.year, t.month, t.day);
@@ -156,21 +175,51 @@ TimeBucket bucketFor(DateTime time, TimeResolution resolution) {
         label: '${t.month}月${t.day}日',
         centerDays: timeDays(start) + 0.5,
       );
+    case TimeUnit.days:
+      final step = resolution.step <= 0 ? 3 : resolution.step;
+      final n = dayNumber(t);
+      final startN = n - _mod(n, step);
+      final start = dateFromDayNumber(startN);
+      final last = dateFromDayNumber(startN + step - 1);
+      return TimeBucket(
+        id: 'd$step:${_stamp(start)}',
+        label: '${start.month}月${start.day}日–${last.month}月${last.day}日',
+        centerDays: startN + step / 2,
+      );
     case TimeUnit.week:
+    case TimeUnit.weeks:
+      final step = resolution.unit == TimeUnit.week ? 7 : (resolution.step <= 0 ? 14 : resolution.step);
       final day = DateTime(t.year, t.month, t.day);
       final monday = day.subtract(Duration(days: day.weekday - 1));
-      final sunday = monday.add(const Duration(days: 6));
+      final mondayN = dayNumber(monday);
+      final startN = mondayN - _mod(mondayN - _fortnightAnchor, step);
+      final start = dateFromDayNumber(startN);
+      final last = dateFromDayNumber(startN + step - 1);
       return TimeBucket(
-        id: _stamp(monday),
-        label: '${monday.month}月${monday.day}日 – ${sunday.month}月${sunday.day}日',
-        centerDays: timeDays(monday) + 3.5,
+        id: step == 7 ? _stamp(start) : 'w$step:${_stamp(start)}',
+        label: '${start.month}月${start.day}日–${last.month}月${last.day}日',
+        centerDays: startN + step / 2,
       );
     case TimeUnit.month:
-      final start = DateTime(t.year, t.month, 1);
-      final end = DateTime(t.year, t.month + 1, 1);
+    case TimeUnit.months:
+      final step = resolution.unit == TimeUnit.month ? 1 : (resolution.step <= 0 ? 3 : resolution.step);
+      final index = t.year * 12 + (t.month - 1);
+      final startIndex = index - _mod(index, step);
+      final sy = startIndex ~/ 12;
+      final sm = _mod(startIndex, 12);
+      final start = DateTime(sy, sm + 1, 1);
+      final end = DateTime(sy, sm + 1 + step, 1);
+      final endIndex = sm + step - 1;
+      final ey = sy + endIndex ~/ 12;
+      final em = _mod(endIndex, 12);
+      final label = step == 1
+          ? '${t.year}年${t.month}月'
+          : ey == sy
+              ? '$sy年${sm + 1}–${em + 1}月'
+              : '$sy年${sm + 1}月–$ey年${em + 1}月';
       return TimeBucket(
-        id: '${t.year}-${_two(t.month)}',
-        label: '${t.year}年${t.month}月',
+        id: step == 1 ? '$sy-${_two(sm + 1)}' : 'm$step:$sy-${_two(sm + 1)}',
+        label: label,
         centerDays: (timeDays(start) + timeDays(end)) / 2,
       );
     case TimeUnit.year:
@@ -182,8 +231,8 @@ TimeBucket bucketFor(DateTime time, TimeResolution resolution) {
         centerDays: (timeDays(start) + timeDays(end)) / 2,
       );
     case TimeUnit.years:
-      final span = resolution.spanYears <= 0 ? 3 : resolution.spanYears;
-      final startYear = t.year - (t.year % span);
+      final span = resolution.step <= 0 ? 3 : resolution.step;
+      final startYear = t.year - _mod(t.year, span);
       final start = DateTime(startYear, 1, 1);
       final end = DateTime(startYear + span, 1, 1);
       return TimeBucket(
@@ -192,6 +241,14 @@ TimeBucket bucketFor(DateTime time, TimeResolution resolution) {
         centerDays: (timeDays(start) + timeDays(end)) / 2,
       );
   }
+}
+
+int get _fortnightAnchor => dayNumber(DateTime(1970, 1, 5));
+
+int _mod(int value, int modulo) {
+  if (modulo <= 0) return 0;
+  final raw = value % modulo;
+  return raw < 0 ? raw + modulo : raw;
 }
 
 /// Ticks stay about a thumb apart, aligned to the calendar, whatever the scale.

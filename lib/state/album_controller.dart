@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:ui';
 
 import 'package:flutter/foundation.dart';
 
@@ -8,6 +9,7 @@ import '../models/media_batch.dart';
 import '../models/media_filter.dart';
 import '../timeline/day_timeline_layout.dart';
 import '../timeline/time_resolution.dart';
+import '../timeline/timeline_metrics.dart';
 import '../timeline/timeline_viewport.dart';
 
 enum QuickRange { all, days7, days30, thisYear }
@@ -30,6 +32,7 @@ class AlbumController extends ChangeNotifier {
   String? error;
   String sourceLabel = '';
   bool pendingFrame = false;
+  double viewWidth = 0;
 
   final Set<String> _thumbInFlight = {};
   final Set<String> _thumbGaveUp = {};
@@ -105,17 +108,21 @@ class AlbumController extends ChangeNotifier {
   void setQuickRange(QuickRange value) {
     if (quickRange == value) return;
     quickRange = value;
+    _settleScroll();
     notifyListeners();
   }
 
   void setKind(MediaKind? value) {
     if (kind == value) return;
     kind = value;
+    _settleScroll();
     notifyListeners();
   }
 
-  void panBy(double deltaScreenX) {
+  void panBy(double deltaScreenX, {required double viewWidth}) {
+    this.viewWidth = viewWidth;
     viewport.panBy(deltaScreenX);
+    _settleScroll();
     notifyListeners();
   }
 
@@ -124,31 +131,46 @@ class AlbumController extends ChangeNotifier {
     required double factor,
     required double viewWidth,
   }) {
+    this.viewWidth = viewWidth;
     viewport.zoomAt(
       focalScreenX: focalScreenX,
       factor: factor,
       minPixelsPerDay: TimeScale.fitPixelsPerDay(visible.map((asset) => asset.createdAt), viewWidth),
       maxPixelsPerDay: TimeScale.maxPixelsPerDay,
     );
+    _settleScroll();
     notifyListeners();
   }
 
   void ensureScale(double viewWidth) {
+    this.viewWidth = viewWidth;
     if (viewWidth <= 0 || viewport.pixelsPerDay <= 0) return;
     final next = TimeScale.clampPixels(
       viewport.pixelsPerDay,
       visible.map((asset) => asset.createdAt),
       viewWidth,
     );
-    if ((next - viewport.pixelsPerDay).abs() < 0.01) return;
+    if ((next - viewport.pixelsPerDay).abs() < 0.01) {
+      _settleScroll();
+      return;
+    }
     final focalDays = (viewport.scrollX + viewWidth / 2) / viewport.pixelsPerDay;
     viewport.pixelsPerDay = next;
     viewport.scrollX = focalDays * next - viewWidth / 2;
+    _settleScroll();
     notifyListeners();
   }
 
   void frameIfNeeded(double viewWidth, double trackCrossExtent) {
-    if (!pendingFrame || viewWidth <= 0 || trackCrossExtent <= 0) return;
+    this.viewWidth = viewWidth;
+    if (loading) {
+      _parkOnToday();
+      return;
+    }
+    if (!pendingFrame || viewWidth <= 0 || trackCrossExtent <= 0) {
+      _settleScroll();
+      return;
+    }
     pendingFrame = false;
     final next = TimeScale.clampPixels(
       viewport.pixelsPerDay,
@@ -158,17 +180,18 @@ class AlbumController extends ChangeNotifier {
     viewport.pixelsPerDay = next;
     final batches = layout(trackCrossExtent);
     if (batches.isEmpty) {
-      final x = timeDays(DateTime.now()) * viewport.pixelsPerDay;
-      viewport.scrollX = x - viewWidth * 0.5;
+      _parkOnToday(force: true);
     } else {
       viewport.scrollX = batches.last.position.dx - viewWidth * 0.62;
+      _settleScroll();
     }
     notifyListeners();
   }
 
   void revealToday(double viewWidth) {
-    final x = timeDays(DateTime.now()) * viewport.pixelsPerDay;
-    viewport.scrollX = x - viewWidth * 0.5;
+    this.viewWidth = viewWidth;
+    _parkOnToday(force: true);
+    _settleScroll();
     notifyListeners();
   }
 
@@ -178,6 +201,7 @@ class AlbumController extends ChangeNotifier {
     required double focalScreenX,
     required double viewWidth,
   }) {
+    this.viewWidth = viewWidth;
     final next = TimeScale.clampPixels(
       pixelsPerDay,
       visible.map((asset) => asset.createdAt),
@@ -185,6 +209,35 @@ class AlbumController extends ChangeNotifier {
     );
     viewport.pixelsPerDay = next;
     viewport.scrollX = focalDays * next - focalScreenX;
+    _settleScroll();
+    notifyListeners();
+  }
+
+  /// While nothing has loaded yet, keep today in the middle of the track.
+  void _parkOnToday({bool force = false}) {
+    if (!force && !loading && master.isNotEmpty) return;
+    if (viewWidth <= 0 || viewport.pixelsPerDay <= 0) return;
+    final target = timeDays(DateTime.now()) * viewport.pixelsPerDay - viewWidth * 0.5;
+    if ((viewport.scrollX - target).abs() < 0.5) return;
+    viewport.scrollX = target;
+    notifyListeners();
+  }
+
+  void _settleScroll() {
+    if (loading || visible.isEmpty) {
+      _parkOnToday(force: true);
+      return;
+    }
+    if (viewWidth <= 0) return;
+    final next = clampTimelineScroll(
+      scrollX: viewport.scrollX,
+      pixelsPerDay: viewport.pixelsPerDay,
+      viewWidth: viewWidth,
+      dayMarks: visible.map((asset) => timeDays(asset.createdAt.toLocal())),
+      edgePad: TimelineMetrics.footprintWidth / 2,
+    );
+    if ((next - viewport.scrollX).abs() < 0.01) return;
+    viewport.scrollX = next;
     notifyListeners();
   }
 
@@ -192,10 +245,13 @@ class AlbumController extends ChangeNotifier {
     return TimeScale.resolutionFor(viewport.pixelsPerDay, trackCrossExtent);
   }
 
-  void openBatch(MediaBatch batch) {
+  Offset? previewOrigin;
+
+  void openBatch(MediaBatch batch, {Offset? origin}) {
     if (batch.items.isEmpty) return;
     previewIds = [for (final item in batch.items) item.id];
     selectedBatchId = batch.id;
+    previewOrigin = origin;
     notifyListeners();
     for (final item in batch.items) {
       unawaited(_hydrate(item));
@@ -205,6 +261,7 @@ class AlbumController extends ChangeNotifier {
   void closePreview() {
     if (previewIds == null) return;
     previewIds = null;
+    previewOrigin = null;
     notifyListeners();
   }
 
