@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../loaders/image_loader.dart';
 import '../models/media_asset.dart';
 import '../state/album_controller.dart';
 import '../theme/app_theme.dart';
@@ -97,6 +98,9 @@ class _AlbumHomePageState extends State<AlbumHomePage> {
                           rows: TimelineMetrics.laneCount(_track),
                           originGlobal: controller.previewOrigin,
                           onClose: controller.closePreview,
+                          locateLabel: _onPhone ? '在相册中显示' : '在文件夹中显示',
+                          resolveOriginal: controller.loader.materializeOriginal,
+                          onReveal: _revealAsset,
                         ),
                       ),
                   ],
@@ -105,6 +109,19 @@ class _AlbumHomePageState extends State<AlbumHomePage> {
         ),
       ),
     );
+  }
+
+  bool get _onPhone =>
+      defaultTargetPlatform == TargetPlatform.iOS || defaultTargetPlatform == TargetPlatform.android;
+
+  Future<void> _revealAsset(MediaAsset asset) async {
+    try {
+      await controller.loader.reveal(asset);
+    } catch (error) {
+      if (!mounted) return;
+      final text = error is LibraryException ? error.message : '无法打开这张照片';
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
+    }
   }
 
   void _zoom(double factor) {

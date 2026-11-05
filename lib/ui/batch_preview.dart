@@ -15,6 +15,9 @@ class BatchPreview extends StatefulWidget {
   final List<MediaAsset> items;
   final int rows;
   final Offset? originGlobal;
+  final Future<String?> Function(MediaAsset asset)? resolveOriginal;
+  final Future<void> Function(MediaAsset asset)? onReveal;
+  final String locateLabel;
   final VoidCallback onClose;
 
   const BatchPreview({
@@ -23,6 +26,9 @@ class BatchPreview extends StatefulWidget {
     required this.rows,
     required this.onClose,
     this.originGlobal,
+    this.resolveOriginal,
+    this.onReveal,
+    this.locateLabel = '在文件夹中显示',
   });
 
   @override
@@ -31,6 +37,7 @@ class BatchPreview extends StatefulWidget {
 
 class _BatchPreviewState extends State<BatchPreview> with SingleTickerProviderStateMixin {
   final Map<String, GlobalKey> _keys = {};
+  final Map<String, GlobalKey> _locateKeys = {};
   final Map<int, Offset> _pointers = {};
   final Set<String> _flipped = {};
 
@@ -48,6 +55,9 @@ class _BatchPreviewState extends State<BatchPreview> with SingleTickerProviderSt
   Timer? _zoomIdle;
   late final AnimationController _spread;
   bool _closing = false;
+  String? _originFor;
+  String? _originPath;
+  int _originTicket = 0;
 
   @override
   void initState() {
@@ -75,6 +85,31 @@ class _BatchPreviewState extends State<BatchPreview> with SingleTickerProviderSt
   }
 
   GlobalKey _keyFor(String id) => _keys.putIfAbsent(id, GlobalKey.new);
+
+  GlobalKey _locateKey(String id) => _locateKeys.putIfAbsent(id, GlobalKey.new);
+
+  void _armOriginal(String? id) {
+    if (id == null || id == _originFor) return;
+    _originFor = id;
+    _originPath = null;
+    MediaAsset? asset;
+    for (final item in widget.items) {
+      if (item.id == id) asset = item;
+    }
+    if (asset == null) return;
+    final direct = asset.filePath;
+    if (direct.isNotEmpty && File(direct).existsSync()) {
+      _originPath = direct;
+      return;
+    }
+    final resolve = widget.resolveOriginal;
+    if (resolve == null) return;
+    final ticket = ++_originTicket;
+    resolve(asset).then((found) {
+      if (!mounted || ticket != _originTicket || _zoomId != id) return;
+      setState(() => _originPath = found);
+    });
+  }
 
   Offset _localOrigin(BoxConstraints constraints) {
     final global = widget.originGlobal;
@@ -139,6 +174,8 @@ class _BatchPreviewState extends State<BatchPreview> with SingleTickerProviderSt
               asset: asset,
               flipped: _flipped.contains(asset.id),
               caption: _frontCaption(asset),
+              locateLabel: widget.locateLabel,
+              locateKey: _locateKey(asset.id),
             ),
           ),
         ),
@@ -248,7 +285,7 @@ class _BatchPreviewState extends State<BatchPreview> with SingleTickerProviderSt
                         child: Opacity(
                           opacity: t,
                           child: const Text(
-                            '点一张翻到背面    双指或滚轮放大    点空白返回',
+                            '点一张翻到背面    双指或滚轮看原图    点空白返回',
                             textAlign: TextAlign.center,
                             style: TextStyle(color: DeskColors.muted, fontSize: 12),
                           ),
@@ -280,11 +317,7 @@ class _BatchPreviewState extends State<BatchPreview> with SingleTickerProviderSt
             child: SizedBox(
               width: cardW,
               height: cardH,
-              child: _Polaroid(
-                asset: asset,
-                flipped: _flipped.contains(asset.id),
-                caption: _frontCaption(asset),
-              ),
+              child: _OriginalPhoto(asset: asset, path: _originFor == asset.id ? _originPath : null),
             ),
           ),
         ),
@@ -337,6 +370,7 @@ class _BatchPreviewState extends State<BatchPreview> with SingleTickerProviderSt
       if (id != null) {
         _keepZoom();
         _pinch = _Pinch(id: id, dist: dist, scale: _zoomId == id ? _scale : 1, pan: _zoomId == id ? _pan : Offset.zero);
+        _armOriginal(id);
         setState(() {
           _zoomId = id;
           _zoomOpacity = 1;
@@ -356,6 +390,7 @@ class _BatchPreviewState extends State<BatchPreview> with SingleTickerProviderSt
       final dist = math.max(12.0, (points[0] - points[1]).distance);
       final scale = (_pinch!.scale * dist / _pinch!.dist).clamp(1.0, 5.0);
       _keepZoom();
+      _armOriginal(_pinch!.id);
       setState(() {
         _zoomId = _pinch!.id;
         _scale = scale <= 1.02 ? 1 : scale;
@@ -389,6 +424,18 @@ class _BatchPreviewState extends State<BatchPreview> with SingleTickerProviderSt
     if (endedPinch && _pointers.length < 2 && _zoomId != null && _scale > 1) _armZoomEnd();
     if (_spread.value < 0.98) return;
     if (wasDrag || _pointers.isNotEmpty) return;
+    final located = _locateOwner(event.position);
+    if (located != null) {
+      final reveal = widget.onReveal;
+      if (reveal != null) {
+        MediaAsset? asset;
+        for (final item in widget.items) {
+          if (item.id == located) asset = item;
+        }
+        if (asset != null) reveal(asset);
+      }
+      return;
+    }
     final id = _hit(event.position);
     if (id == null) {
       _requestClose();
@@ -402,6 +449,18 @@ class _BatchPreviewState extends State<BatchPreview> with SingleTickerProviderSt
         _flipped.add(id);
       }
     });
+  }
+
+  String? _locateOwner(Offset global) {
+    for (final entry in _locateKeys.entries) {
+      final box = entry.value.currentContext?.findRenderObject() as RenderBox?;
+      if (box == null || !box.hasSize) continue;
+      final local = box.globalToLocal(global);
+      if (local.dx >= 0 && local.dy >= 0 && local.dx <= box.size.width && local.dy <= box.size.height) {
+        return entry.key;
+      }
+    }
+    return null;
   }
 
   void _signal(PointerSignalEvent event) {
@@ -421,6 +480,7 @@ class _BatchPreviewState extends State<BatchPreview> with SingleTickerProviderSt
       return;
     }
     _keepZoom();
+    _armOriginal(id);
     setState(() {
       _zoomId = id;
       _scale = scale;
@@ -442,8 +502,16 @@ class _Polaroid extends StatelessWidget {
   final MediaAsset asset;
   final bool flipped;
   final String caption;
+  final String locateLabel;
+  final GlobalKey locateKey;
 
-  const _Polaroid({required this.asset, required this.flipped, required this.caption});
+  const _Polaroid({
+    required this.asset,
+    required this.flipped,
+    required this.caption,
+    required this.locateLabel,
+    required this.locateKey,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -452,7 +520,7 @@ class _Polaroid extends StatelessWidget {
       flipped: flipped,
       duration: reduce ? Duration.zero : const Duration(milliseconds: 520),
       front: _Face(asset: asset, caption: caption),
-      back: _Back(asset: asset),
+      back: _Back(asset: asset, locateLabel: locateLabel, locateKey: locateKey),
     );
   }
 }
@@ -578,7 +646,10 @@ class _Face extends StatelessWidget {
 
 class _Back extends StatelessWidget {
   final MediaAsset asset;
-  const _Back({required this.asset});
+  final String locateLabel;
+  final GlobalKey locateKey;
+
+  const _Back({required this.asset, required this.locateLabel, required this.locateKey});
 
   @override
   Widget build(BuildContext context) {
@@ -602,25 +673,47 @@ class _Back extends StatelessWidget {
         boxShadow: const [BoxShadow(color: Color(0x66000000), blurRadius: 22, offset: Offset(0, 12))],
       ),
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(16, 18, 16, 16),
+        padding: const EdgeInsets.fromLTRB(16, 14, 16, 12),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            for (var i = 0; i < lines.length; i++)
-              Padding(
-                padding: EdgeInsets.only(bottom: i == 0 ? 12 : 6),
-                child: Text(
-                  lines[i],
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    color: i == lines.length - 1 ? DeskColors.muted : DeskColors.ink,
-                    fontSize: i == 0 ? 16 : 13,
-                    height: 1.35,
-                    fontWeight: i == 0 ? FontWeight.w600 : FontWeight.w500,
-                  ),
+            Expanded(
+              child: SingleChildScrollView(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    for (var i = 0; i < lines.length; i++)
+                      Padding(
+                        padding: EdgeInsets.only(bottom: i == 0 ? 10 : 4),
+                        child: Text(
+                          lines[i],
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            color: i == lines.length - 1 ? DeskColors.muted : DeskColors.ink,
+                            fontSize: i == 0 ? 15 : 13,
+                            height: 1.3,
+                            fontWeight: i == 0 ? FontWeight.w600 : FontWeight.w500,
+                          ),
+                        ),
+                      ),
+                  ],
                 ),
               ),
+            ),
+            const SizedBox(height: 8),
+            Container(
+              key: locateKey,
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(999),
+                border: Border.all(color: DeskColors.ink.withOpacity(0.35)),
+              ),
+              child: Text(
+                locateLabel,
+                style: const TextStyle(color: DeskColors.ink, fontSize: 12, fontWeight: FontWeight.w600),
+              ),
+            ),
           ],
         ),
       ),
@@ -628,19 +721,47 @@ class _Back extends StatelessWidget {
   }
 }
 
+class _OriginalPhoto extends StatelessWidget {
+  final MediaAsset asset;
+  final String? path;
+
+  const _OriginalPhoto({required this.asset, required this.path});
+
+  @override
+  Widget build(BuildContext context) {
+    final file = path == null || path!.isEmpty ? null : File(path!);
+    return DecoratedBox(
+      decoration: const BoxDecoration(
+        boxShadow: [BoxShadow(color: Color(0x66000000), blurRadius: 28, offset: Offset(0, 16))],
+      ),
+      child: file == null
+          ? _Still(asset: asset, fit: BoxFit.contain)
+          : Image.file(
+              file,
+              fit: BoxFit.contain,
+              filterQuality: FilterQuality.high,
+              gaplessPlayback: true,
+              errorBuilder: (_, __, ___) => _Still(asset: asset, fit: BoxFit.contain),
+            ),
+    );
+  }
+}
+
 class _Still extends StatelessWidget {
   final MediaAsset asset;
-  const _Still({required this.asset});
+  final BoxFit fit;
+
+  const _Still({required this.asset, this.fit = BoxFit.cover});
 
   @override
   Widget build(BuildContext context) {
     final bytes = asset.thumbnailBytes;
     if (bytes != null && bytes.isNotEmpty) {
-      return Image.memory(bytes, fit: BoxFit.cover, gaplessPlayback: true);
+      return Image.memory(bytes, fit: fit, gaplessPlayback: true);
     }
     final path = asset.thumbnailPath;
     if (path != null && path.isNotEmpty) {
-      return Image.file(File(path), fit: BoxFit.cover, gaplessPlayback: true);
+      return Image.file(File(path), fit: fit, gaplessPlayback: true);
     }
     final hue = (unitHash(asset.id) * 40 + 18);
     final wash = HSLColor.fromAHSL(1, hue, 0.28, 0.42).toColor();

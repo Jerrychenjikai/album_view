@@ -61,36 +61,34 @@ FlightPose poseOf(FlightCard card, double t) {
   final eased = _ease(clamped);
   switch (card.kind) {
     case FlightKind.mergeOut:
-      final move = _ease(clamped / 0.7 > 1 ? 1 : clamped / 0.7);
-      final opacity = clamped < 0.58 ? 1.0 : 1 - (clamped - 0.58) / 0.42;
       return FlightPose(
-        days: _lerp(card.fromDays, card.toDays, move),
-        y: _lerp(card.fromY, card.toY, move),
-        opacity: opacity,
-        scale: _lerp(1, 0.9, move),
+        days: _lerp(card.fromDays, card.toDays, eased),
+        y: _lerp(card.fromY, card.toY, eased),
+        opacity: _coverFade(clamped, 0.78, 1),
+        scale: 1,
       );
     case FlightKind.fadeOut:
       return FlightPose(
         days: card.fromDays,
         y: card.fromY,
-        opacity: 1 - eased,
-        scale: _lerp(1, 0.96, eased),
+        opacity: _coverFade(clamped, 0.02, 0.22),
+        scale: 1,
       );
     case FlightKind.fadeIn:
-      return FlightPose(
-        days: card.toDays,
-        y: card.toY,
-        opacity: eased,
-        scale: _lerp(0.92, 1, eased),
-      );
     case FlightKind.splitIn:
       return FlightPose(
         days: _lerp(card.fromDays, card.toDays, eased),
         y: _lerp(card.fromY, card.toY, eased),
-        opacity: clamped / 0.38 > 1 ? 1 : clamped / 0.38,
-        scale: _lerp(0.9, 1, eased),
+        opacity: 1,
+        scale: 1,
       );
   }
+}
+
+double _coverFade(double t, double start, double end) {
+  if (t <= start) return 1;
+  if (t >= end) return 0;
+  return 1 - (t - start) / (end - start);
 }
 
 double _daysOf(MediaBatch batch, double ppd) => batch.position.dx / (ppd <= 0 ? 1 : ppd);
@@ -123,7 +121,7 @@ MediaBatch? _parent(MediaBatch batch, List<MediaBatch> parents) {
   return null;
 }
 
-/// `coarser` is true when several batches collapse into one.
+/// Old and new batches share one pass. New ones are drawn underneath first.
 ResolutionFlight planResolutionFlight({
   required List<MediaBatch> from,
   required double fromPpd,
@@ -134,16 +132,16 @@ ResolutionFlight planResolutionFlight({
   if (coarser) {
     return ResolutionFlight(
       merge: true,
-      outMs: 520,
-      inMs: 280,
+      outMs: 560,
+      inMs: 0,
       outCards: [for (final batch in from) _mergeOut(batch, fromPpd, to, toPpd)],
-      inCards: [for (final batch in to) _fadeIn(batch, toPpd)],
+      inCards: [for (final batch in to) _settleIn(batch, toPpd, from, fromPpd)],
     );
   }
   return ResolutionFlight(
     merge: false,
-    outMs: 240,
-    inMs: 560,
+    outMs: 560,
+    inMs: 0,
     outCards: [for (final batch in from) _fadeOut(batch, fromPpd)],
     inCards: [for (final batch in to) _splitIn(batch, toPpd, from, fromPpd)],
   );
@@ -162,14 +160,14 @@ FlightCard _mergeOut(MediaBatch batch, double fromPpd, List<MediaBatch> to, doub
   );
 }
 
-FlightCard _fadeIn(MediaBatch batch, double ppd) {
-  final days = _daysOf(batch, ppd);
+FlightCard _settleIn(MediaBatch batch, double toPpd, List<MediaBatch> from, double fromPpd) {
+  final source = _majority(batch, from);
   return FlightCard(
     key: 'in-${batch.id}',
     batch: batch,
-    fromDays: days,
-    toDays: days,
-    fromY: batch.position.dy,
+    fromDays: source == null ? _daysOf(batch, toPpd) : _daysOf(source, fromPpd),
+    toDays: _daysOf(batch, toPpd),
+    fromY: source == null ? batch.position.dy : source.position.dy,
     toY: batch.position.dy,
     kind: FlightKind.fadeIn,
   );

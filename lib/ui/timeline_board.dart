@@ -29,8 +29,6 @@ class TimelineBoard extends StatefulWidget {
   State<TimelineBoard> createState() => _TimelineBoardState();
 }
 
-enum _FlightPhase { out, into }
-
 class _TimelineBoardState extends State<TimelineBoard> with SingleTickerProviderStateMixin {
   final Map<int, Offset> _pointers = {};
   double _travel = 0;
@@ -42,20 +40,17 @@ class _TimelineBoardState extends State<TimelineBoard> with SingleTickerProvider
 
   late final AnimationController _flightClock;
   ResolutionFlight? _flight;
-  _FlightPhase _phase = _FlightPhase.out;
   String _prevIds = '';
   List<MediaBatch>? _prevBatches;
   double _prevPpd = 1;
   double _prevResolutionDays = 1;
   double _poseT = 0;
-  bool _holdInAtZero = false;
 
   @override
   void initState() {
     super.initState();
     _flightClock = AnimationController(vsync: this)
       ..addListener(() {
-        if (_holdInAtZero) return;
         _poseT = _flightClock.value;
         if (mounted) setState(() {});
       })
@@ -109,8 +104,6 @@ class _TimelineBoardState extends State<TimelineBoard> with SingleTickerProvider
 
   void _begin(ResolutionFlight flight) {
     _flight = flight;
-    _phase = _FlightPhase.out;
-    _holdInAtZero = false;
     _poseT = 0;
     _flightClock.stop();
     _flightClock.duration = Duration(milliseconds: flight.outMs);
@@ -119,32 +112,13 @@ class _TimelineBoardState extends State<TimelineBoard> with SingleTickerProvider
 
   void _onFlightStatus(AnimationStatus status) {
     if (status != AnimationStatus.completed || _flight == null) return;
-    if (_phase == _FlightPhase.out) {
-      final ms = _flight!.inMs;
-      // Paint the fade-out at opacity 0 before the outgoing batches unmount.
-      _poseT = 1;
-      setState(() {});
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!mounted || _flight == null || _phase != _FlightPhase.out) return;
-        _holdInAtZero = true;
-        _poseT = 0;
-        setState(() => _phase = _FlightPhase.into);
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (!mounted || _flight == null || _phase != _FlightPhase.into) return;
-          _holdInAtZero = false;
-          _flightClock.duration = Duration(milliseconds: ms);
-          _flightClock.forward(from: 0);
-        });
-      });
-      return;
-    }
     setState(() => _flight = null);
   }
 
   List<MediaBatch> _visualBatches(double ppd) {
     final flight = _flight;
     if (flight == null) return _prevBatches ?? widget.batches;
-    final cards = _phase == _FlightPhase.out ? flight.outCards : flight.inCards;
+    final cards = flight.merge && _poseT < 0.78 ? flight.outCards : flight.inCards;
     return [
       for (final card in cards)
         card.batch.copyWith(
@@ -179,9 +153,8 @@ class _TimelineBoardState extends State<TimelineBoard> with SingleTickerProvider
     final visualW = TimelineMetrics.cardWidth + TimelineMetrics.fan * 2;
     final visualH = TimelineMetrics.cardHeight + TimelineMetrics.fan;
     final flight = _flight;
-    final flightCards = flight == null
-        ? const <FlightCard>[]
-        : (_phase == _FlightPhase.out ? flight.outCards : flight.inCards);
+    final under = flight?.inCards ?? const <FlightCard>[];
+    final over = flight?.outCards ?? const <FlightCard>[];
 
     return MouseRegion(
       cursor: _pointers.isEmpty ? SystemMouseCursors.grab : SystemMouseCursors.grabbing,
@@ -218,8 +191,8 @@ class _TimelineBoardState extends State<TimelineBoard> with SingleTickerProvider
                   scale: 1,
                   onTap: () => _handleTap(batch),
                 )
-            else
-              for (final card in flightCards)
+            else ...[
+              for (final card in under)
                 if (_flightOnScreen(card, scroll, ppd, widget.viewWidth))
                   _placedBatch(
                     key: ValueKey(card.batch.id),
@@ -232,6 +205,20 @@ class _TimelineBoardState extends State<TimelineBoard> with SingleTickerProvider
                     scale: poseOf(card, _poseT).scale,
                     onTap: () {},
                   ),
+              for (final card in over)
+                if (_flightOnScreen(card, scroll, ppd, widget.viewWidth))
+                  _placedBatch(
+                    key: ValueKey(card.key),
+                    batch: card.batch,
+                    left: poseOf(card, _poseT).days * ppd - scroll - visualW / 2,
+                    top: TimelineMetrics.rulerHeight + poseOf(card, _poseT).y - visualH / 2,
+                    width: visualW,
+                    height: visualH,
+                    opacity: poseOf(card, _poseT).opacity,
+                    scale: poseOf(card, _poseT).scale,
+                    onTap: () {},
+                  ),
+            ],
           ],
         ),
       ),
@@ -274,9 +261,6 @@ class _TimelineBoardState extends State<TimelineBoard> with SingleTickerProvider
     final screen = pose.days * ppd - scroll;
     final margin = TimelineMetrics.footprintWidth * 1.6;
     if (screen < -margin || screen > width + margin) return false;
-    // Fade-out stays mounted until the phase ends, even at opacity 0,
-    // so the removal pop happens while the card is already invisible.
-    if (_phase == _FlightPhase.out) return true;
     return true;
   }
 

@@ -27,6 +27,14 @@ abstract interface class ImageLoader {
 
   /// Fills GPS, camera and file size when the fast listing omitted them.
   Future<MediaAsset> ensureDetails(MediaAsset asset);
+
+  /// Absolute path of the original file, exporting it from the system library
+  /// when the listing only had an id. Null when it cannot be read.
+  Future<String?> materializeOriginal(MediaAsset asset);
+
+  /// Desktop: select the file in Finder or Explorer.
+  /// Phone: open this item in the system gallery.
+  Future<void> reveal(MediaAsset asset);
 }
 
 class LibraryException implements Exception {

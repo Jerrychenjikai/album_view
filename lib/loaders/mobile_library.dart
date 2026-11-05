@@ -1,6 +1,8 @@
 import 'dart:io';
 
+import 'package:android_intent_plus/android_intent.dart';
 import 'package:photo_manager/photo_manager.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../models/media_asset.dart';
 import '../models/media_filter.dart';
@@ -166,6 +168,42 @@ class MobileLibrary {
       } catch (_) {}
     }
     return next;
+  }
+
+  Future<String?> materializeOriginal(MediaAsset asset) async {
+    final direct = asset.filePath;
+    if (direct.isNotEmpty && await File(direct).exists()) return direct;
+    final entity = await AssetEntity.fromId(asset.id);
+    if (entity == null) return null;
+    try {
+      final file = await entity.originFile;
+      if (file != null && await file.exists()) return file.path;
+    } catch (_) {}
+    return null;
+  }
+
+  /// Android opens the MediaStore item in the gallery.
+  /// iOS has no public deep link to one photo, so this opens the Photos app.
+  Future<void> reveal(MediaAsset asset) async {
+    final entity = await AssetEntity.fromId(asset.id);
+    if (Platform.isAndroid) {
+      final url = await entity?.getMediaUrl();
+      if (url == null || url.isEmpty) throw const LibraryException('相册里找不到这张照片');
+      final mime = entity?.mimeType ?? (asset.kind == MediaKind.video ? 'video/*' : 'image/*');
+      await AndroidIntent(
+        action: 'action_view',
+        data: url,
+        type: mime,
+        flags: const [1, 268435456],
+      ).launch();
+      return;
+    }
+    if (entity == null) throw const LibraryException('相册里找不到这张照片');
+    final opened = await launchUrl(
+      Uri.parse('photos-redirect://'),
+      mode: LaunchMode.externalApplication,
+    );
+    if (!opened) throw const LibraryException('打不开相册');
   }
 }
 

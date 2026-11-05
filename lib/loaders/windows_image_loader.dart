@@ -45,6 +45,12 @@ class PlatformImageLoader implements ImageLoader {
 
   @override
   Future<MediaAsset> ensureDetails(MediaAsset asset) => _library.ensureDetails(asset);
+
+  @override
+  Future<String?> materializeOriginal(MediaAsset asset) => _library.materializeOriginal(asset);
+
+  @override
+  Future<void> reveal(MediaAsset asset) => _library.reveal(asset);
 }
 
 Directory _defaultAppDirectory() => File(Platform.resolvedExecutable).parent;

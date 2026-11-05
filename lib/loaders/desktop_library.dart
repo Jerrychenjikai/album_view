@@ -170,4 +170,26 @@ class DesktopLibrary {
   }
 
   Future<MediaAsset> ensureDetails(MediaAsset asset) async => asset;
+
+  Future<String?> materializeOriginal(MediaAsset asset) async {
+    final file = File(asset.filePath);
+    if (await file.exists()) return file.path;
+    return null;
+  }
+
+  Future<void> reveal(MediaAsset asset) async {
+    final file = File(asset.filePath);
+    if (!await file.exists()) throw const LibraryException('找不到这个文件');
+    if (Platform.isWindows) {
+      await Process.run('explorer.exe', ['/select,${file.path}']);
+      return;
+    }
+    if (Platform.isMacOS) {
+      final result = await Process.run('open', ['-R', file.path]);
+      if (result.exitCode != 0) throw const LibraryException('无法在访达中显示');
+      return;
+    }
+    final result = await Process.run('xdg-open', [file.parent.path]);
+    if (result.exitCode != 0) throw const LibraryException('无法打开所在文件夹');
+  }
 }
