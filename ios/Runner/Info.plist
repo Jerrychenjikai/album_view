@@ -10,6 +10,10 @@
 	<string>Album Viewer</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>需要您的同意才能访问相册选择图片</string>
+	<key>NSCameraUsageDescription</key>
+	<string>需要相机来拍摄照片</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>需要位置信息</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
