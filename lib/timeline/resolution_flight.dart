@@ -93,32 +93,36 @@ double _coverFade(double t, double start, double end) {
 
 double _daysOf(MediaBatch batch, double ppd) => batch.position.dx / (ppd <= 0 ? 1 : ppd);
 
-MediaBatch? _majority(MediaBatch batch, List<MediaBatch> targets) {
-  final ids = {for (final item in batch.items) item.id};
+MediaBatch? _majority(MediaBatch batch, Map<String, MediaBatch> index) {
   MediaBatch? best;
   var count = 0;
-  for (final target in targets) {
-    var n = 0;
-    for (final item in target.items) {
-      if (ids.contains(item.id)) n++;
-    }
-    if (n > count) {
+  final votes = <MediaBatch, int>{};
+  for (final item in batch.items) {
+    final target = index[item.id];
+    if (target == null) continue;
+    final next = (votes[target] ?? 0) + 1;
+    votes[target] = next;
+    if (next > count) {
       best = target;
-      count = n;
+      count = next;
     }
   }
   return best;
 }
 
-MediaBatch? _parent(MediaBatch batch, List<MediaBatch> parents) {
+MediaBatch? _parent(MediaBatch batch, Map<String, MediaBatch> index) {
   if (batch.items.isEmpty) return null;
-  final id = batch.items.first.id;
-  for (final parent in parents) {
-    for (final item in parent.items) {
-      if (item.id == id) return parent;
+  return index[batch.items.first.id];
+}
+
+Map<String, MediaBatch> _byItem(List<MediaBatch> batches) {
+  final map = <String, MediaBatch>{};
+  for (final batch in batches) {
+    for (final item in batch.items) {
+      map[item.id] = batch;
     }
   }
-  return null;
+  return map;
 }
 
 /// Old and new batches share one pass. New ones are drawn underneath first.
@@ -130,24 +134,27 @@ ResolutionFlight planResolutionFlight({
   required bool coarser,
 }) {
   if (coarser) {
+    final toIndex = _byItem(to);
+    final fromIndex = _byItem(from);
     return ResolutionFlight(
       merge: true,
       outMs: 560,
       inMs: 0,
-      outCards: [for (final batch in from) _mergeOut(batch, fromPpd, to, toPpd)],
-      inCards: [for (final batch in to) _settleIn(batch, toPpd, from, fromPpd)],
+      outCards: [for (final batch in from) _mergeOut(batch, fromPpd, toIndex, toPpd)],
+      inCards: [for (final batch in to) _settleIn(batch, toPpd, fromIndex, fromPpd)],
     );
   }
+  final fromIndex = _byItem(from);
   return ResolutionFlight(
     merge: false,
     outMs: 560,
     inMs: 0,
     outCards: [for (final batch in from) _fadeOut(batch, fromPpd)],
-    inCards: [for (final batch in to) _splitIn(batch, toPpd, from, fromPpd)],
+    inCards: [for (final batch in to) _splitIn(batch, toPpd, fromIndex, fromPpd)],
   );
 }
 
-FlightCard _mergeOut(MediaBatch batch, double fromPpd, List<MediaBatch> to, double toPpd) {
+FlightCard _mergeOut(MediaBatch batch, double fromPpd, Map<String, MediaBatch> to, double toPpd) {
   final target = _majority(batch, to);
   return FlightCard(
     key: 'out-${batch.id}',
@@ -160,7 +167,7 @@ FlightCard _mergeOut(MediaBatch batch, double fromPpd, List<MediaBatch> to, doub
   );
 }
 
-FlightCard _settleIn(MediaBatch batch, double toPpd, List<MediaBatch> from, double fromPpd) {
+FlightCard _settleIn(MediaBatch batch, double toPpd, Map<String, MediaBatch> from, double fromPpd) {
   final source = _majority(batch, from);
   return FlightCard(
     key: 'in-${batch.id}',
@@ -186,7 +193,7 @@ FlightCard _fadeOut(MediaBatch batch, double ppd) {
   );
 }
 
-FlightCard _splitIn(MediaBatch batch, double toPpd, List<MediaBatch> from, double fromPpd) {
+FlightCard _splitIn(MediaBatch batch, double toPpd, Map<String, MediaBatch> from, double fromPpd) {
   final parent = _parent(batch, from);
   return FlightCard(
     key: 'in-${batch.id}',

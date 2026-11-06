@@ -22,9 +22,18 @@ class MobileLibrary {
     void Function(List<MediaAsset> batch)? onBatch,
     void Function(LoadProgress progress)? onProgress,
   }) async {
-    final permission = await PhotoManager.requestPermissionExtend();
+    final permission = Platform.isAndroid
+        ? await PhotoManager.requestPermissionExtend(
+            requestOption: const PermissionRequestOption(
+              androidPermission: AndroidPermission(
+                type: RequestType.common,
+                mediaLocation: true,
+              ),
+            ),
+          )
+        : await PhotoManager.requestPermissionExtend();
     if (!_hasAccess(permission)) {
-      throw const LibraryException('没有相册访问权限。请在系统设置中允许后点重新读取。');
+      throw const LibraryException('没有相册访问权限。请在系统设置中允许读取照片和视频，然后点「读取」。');
     }
 
     final option = FilterOptionGroup(
@@ -38,15 +47,15 @@ class MobileLibrary {
           : null,
     );
 
-    final albums = await PhotoManager.getAssetPathList(
-      hasAll: true,
-      onlyAll: true,
-      type: RequestType.common,
-      filterOption: option,
-    );
-    if (albums.isEmpty) return const [];
+    var albums = await _albumList(option);
+    var album = _allAlbum(albums);
+    if (album == null) {
+      await Future<void>.delayed(const Duration(milliseconds: 400));
+      albums = await _albumList(option);
+      album = _allAlbum(albums);
+    }
+    if (album == null) return const [];
 
-    final album = albums.first;
     var total = 0;
     try {
       total = await album.assetCountAsync;
@@ -55,26 +64,55 @@ class MobileLibrary {
     }
     onProgress?.call(LoadProgress(done: 0, total: total));
     final assets = <MediaAsset>[];
+    final seen = <String>{};
     const pageSize = 80;
     var page = 0;
-    while (true) {
-      final chunk = await album.getAssetListPaged(page: page, size: pageSize);
+    while (page < 100000) {
+      final List<AssetEntity> chunk;
+      try {
+        chunk = await album.getAssetListPaged(page: page, size: pageSize);
+      } catch (_) {
+        break;
+      }
       if (chunk.isEmpty) break;
       final pageItems = <MediaAsset>[];
+      var fresh = 0;
       for (final entity in chunk) {
+        if (!seen.add(entity.id)) continue;
+        fresh++;
         if (entity.type != AssetType.image && entity.type != AssetType.video) continue;
-        final asset = _fromEntity(entity, album.name);
-        if (!filter.accepts(asset)) continue;
-        assets.add(asset);
-        pageItems.add(asset);
+        try {
+          final asset = _fromEntity(entity, album.name);
+          if (!filter.accepts(asset)) continue;
+          assets.add(asset);
+          pageItems.add(asset);
+        } catch (_) {}
       }
       if (pageItems.isNotEmpty) onBatch?.call(List<MediaAsset>.from(pageItems));
-      onProgress?.call(LoadProgress(done: assets.length, total: total));
-      if (chunk.length < pageSize) break;
+      onProgress?.call(LoadProgress(done: assets.length, total: total > 0 ? total : assets.length));
+      if (fresh == 0 || chunk.length < pageSize) break;
+      if (total > 0 && assets.length >= total) break;
       page++;
     }
     assets.sort((a, b) => a.createdAt.compareTo(b.createdAt));
     return assets;
+  }
+
+  Future<List<AssetPathEntity>> _albumList(FilterOptionGroup option) {
+    return PhotoManager.getAssetPathList(
+      hasAll: true,
+      onlyAll: false,
+      type: RequestType.common,
+      filterOption: option,
+    );
+  }
+
+  AssetPathEntity? _allAlbum(List<AssetPathEntity> albums) {
+    for (final album in albums) {
+      if (album.isAll) return album;
+    }
+    if (albums.isEmpty) return null;
+    return albums.first;
   }
 
   MediaAsset _fromEntity(AssetEntity entity, String albumName) {

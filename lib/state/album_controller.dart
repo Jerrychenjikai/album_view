@@ -31,6 +31,8 @@ class AlbumController extends ChangeNotifier {
   final TimelineViewport viewport = TimelineViewport();
 
   bool loading = false;
+  /// True from the first wheel / pinch / +/- until the gesture has been quiet.
+  bool zooming = false;
   IntroPhase introPhase = IntroPhase.reveal;
   bool pendingGlide = false;
   bool _userMoved = false;
@@ -42,6 +44,8 @@ class AlbumController extends ChangeNotifier {
   double viewWidth = 0;
   double trackExtent = 0;
   Timer? _glide;
+  Timer? _zoomIdle;
+  final List<MediaAsset> _scanBuffer = [];
 
   final Set<String> _thumbInFlight = {};
   final Set<String> _thumbGaveUp = {};
@@ -55,11 +59,14 @@ class AlbumController extends ChangeNotifier {
 
   String get scanLabel {
     if (!loading) return '';
+    final place = sourceLabel.isEmpty ? '' : ' · $sourceLabel';
     if (scanCounting) {
-      return scanDone <= 0 ? '正在清点文件夹' : '正在清点 · 已看到 $scanDone 个文件';
+      final head = scanDone <= 0 ? '正在清点文件夹' : '正在清点 · 已看到 $scanDone 个文件';
+      return '$head$place';
     }
     if (scanTotal <= 0) {
-      return scanDone <= 0 ? '正在读取' : '正在读取 · 已找到 $scanDone';
+      final head = scanDone <= 0 ? '正在读取' : '正在读取 · 已找到 $scanDone';
+      return '$head$place';
     }
     return '正在读取 $scanDone/$scanTotal · 读完后可以点开';
   }
@@ -116,18 +123,25 @@ class AlbumController extends ChangeNotifier {
     scanCounting = true;
     error = null;
     master = const [];
+    _scanBuffer.clear();
+    _zoomIdle?.cancel();
+    zooming = false;
     _thumbGaveUp.clear();
     _thumbQueue.clear();
     _thumbInFlight.clear();
     _parkOnToday(force: true);
     notifyListeners();
     try {
+      try {
+        sourceLabel = await loader.describeSource();
+        if (ticket == _loadTicket) notifyListeners();
+      } catch (_) {}
       final assets = await loader.load(
         onBatch: (batch) {
           if (ticket != _loadTicket || batch.isEmpty) return;
-          master = [...master, ...batch];
-          if (!_userMoved && introPhase == IntroPhase.reveal) _parkOnToday(force: true);
-          notifyListeners();
+          _scanBuffer.addAll(batch);
+          if (_scanBuffer.length < 100) return;
+          _publishScan(ticket);
         },
         onProgress: (progress) {
           if (ticket != _loadTicket) return;
@@ -142,6 +156,7 @@ class AlbumController extends ChangeNotifier {
         },
       );
       if (ticket != _loadTicket) return;
+      _scanBuffer.clear();
       master = assets;
       try {
         sourceLabel = await loader.describeSource();
@@ -157,9 +172,9 @@ class AlbumController extends ChangeNotifier {
       }
     } catch (error) {
       if (ticket != _loadTicket) return;
+      _scanBuffer.clear();
       master = const [];
       this.error = error.toString();
-      sourceLabel = '';
       introPhase = IntroPhase.done;
       pendingGlide = false;
     } finally {
@@ -206,6 +221,7 @@ class AlbumController extends ChangeNotifier {
   }) {
     this.viewWidth = viewWidth;
     _browse();
+    _armZoomGesture();
     viewport.zoomAt(
       focalScreenX: focalScreenX,
       factor: factor,
@@ -270,6 +286,7 @@ class AlbumController extends ChangeNotifier {
   }) {
     this.viewWidth = viewWidth;
     _browse();
+    _armZoomGesture();
     final next = TimeScale.clampPixels(
       pixelsPerDay,
       visible.map((asset) => asset.createdAt),
@@ -278,6 +295,31 @@ class AlbumController extends ChangeNotifier {
     viewport.pixelsPerDay = next;
     viewport.scrollX = focalDays * next - focalScreenX;
     _settleScroll();
+    notifyListeners();
+  }
+
+  /// Publish at most once per hundred new files so the timeline is not
+  /// rebuilt, and not animated, on every handful of photos.
+  void _publishScan(int ticket) {
+    if (ticket != _loadTicket || _scanBuffer.isEmpty) return;
+    master = [...master, ..._scanBuffer];
+    _scanBuffer.clear();
+    if (!_userMoved && introPhase == IntroPhase.reveal) _parkOnToday(force: true);
+    notifyListeners();
+  }
+
+  void _armZoomGesture() {
+    zooming = true;
+    _zoomIdle?.cancel();
+    _zoomIdle = Timer(const Duration(milliseconds: 180), endZoomGesture);
+  }
+
+  /// Wheel quiet-period, pinch lift, or the last +/- click.
+  void endZoomGesture() {
+    _zoomIdle?.cancel();
+    _zoomIdle = null;
+    if (!zooming) return;
+    zooming = false;
     notifyListeners();
   }
 
@@ -494,6 +536,7 @@ class AlbumController extends ChangeNotifier {
   @override
   void dispose() {
     _glide?.cancel();
+    _zoomIdle?.cancel();
     _loadTicket++;
     super.dispose();
   }

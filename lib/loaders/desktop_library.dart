@@ -48,7 +48,7 @@ class DesktopLibrary {
   Future<String> describeSource() async {
     final root = await resolveRoot();
     final stored = await storedImagePath();
-    final suffix = stored == null ? '（默认，app 所在文件夹）' : '';
+    final suffix = stored == null ? '（默认）' : '';
     return root.path + suffix;
   }
 
@@ -61,12 +61,13 @@ class DesktopLibrary {
     if (!await root.exists()) {
       throw LibraryException(
         '找不到文件夹：${root.path}\n'
-        '在右上角写入 image_path，或把照片放进这个目录的子文件夹。',
+        '点「来源」写一个照片文件夹，或把照片放进这个目录。',
       );
     }
 
     final files = <File>[];
-    await _collect(root, files, (seen) {
+    onProgress?.call(LoadProgress(done: 0, total: 0, counting: true));
+    await _collect(root, root, files, (seen) {
       onProgress?.call(LoadProgress(done: seen, total: 0, counting: true));
     });
     final total = files.length;
@@ -79,7 +80,7 @@ class DesktopLibrary {
       if (asset != null && filter.accepts(asset)) {
         found.add(asset);
         pending.add(asset);
-        if (pending.length >= 24) {
+        if (pending.length >= 100) {
           onBatch?.call(List<MediaAsset>.from(pending));
           pending.clear();
         }
@@ -94,31 +95,51 @@ class DesktopLibrary {
     return found;
   }
 
-  Future<void> _collect(Directory directory, List<File> files, void Function(int seen) onSeen) async {
+  Future<void> _collect(
+    Directory root,
+    Directory directory,
+    List<File> files,
+    void Function(int seen) onSeen,
+  ) async {
     final List<FileSystemEntity> children;
     try {
       children = await directory.list(followLinks: false).toList();
-    } on FileSystemException {
+    } on FileSystemException catch (error) {
+      if (directory.path == root.path) {
+        final detail = error.osError?.message ?? error.message;
+        final hint = Platform.isMacOS ? ' 请点「来源」，在系统弹窗里重新选一次。' : '';
+        throw LibraryException('无法读取文件夹：${directory.path} $detail$hint');
+      }
       return;
     }
+    var visited = 0;
     for (final entity in children) {
+      visited++;
       if (entity is Directory) {
         if (_skipDirectory(p.basename(entity.path))) continue;
-        await _collect(entity, files, onSeen);
+        await _collect(root, entity, files, onSeen);
       } else if (entity is File) {
         final name = p.basename(entity.path);
         if (name.startsWith('.')) continue;
         if (kindForExtension(p.extension(entity.path)) == null) continue;
         files.add(entity);
-        if (files.length % 48 == 0) {
-          onSeen(files.length);
-          await Future<void>.delayed(Duration.zero);
-        }
+      }
+      if (visited % 24 == 0) {
+        onSeen(files.length);
+        await Future<void>.delayed(Duration.zero);
       }
     }
+    if (directory.path == root.path) onSeen(files.length);
   }
 
   bool _skipDirectory(String name) {
+    final lower = name.toLowerCase();
+    if (lower.endsWith('.app') ||
+        lower.endsWith('.photoslibrary') ||
+        lower.endsWith('.framework') ||
+        lower.endsWith('.bundle')) {
+      return true;
+    }
     const blocked = {
       '.git',
       '.dart_tool',
@@ -134,6 +155,14 @@ class DesktopLibrary {
   }
 
   Future<MediaAsset?> _assetFromFile(File file) async {
+    try {
+      return await _readAsset(file);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<MediaAsset?> _readAsset(File file) async {
     final extension = p.extension(file.path);
     final kind = kindForExtension(extension);
     if (kind == null) return null;

@@ -28,7 +28,9 @@ abstract interface class ImageLoader {
   bool get canConfigureFolder;
 
   /// Desktop: writes shared_preferences key `image_path`.
-  /// Empty string clears the key so the loader falls back to the app folder.
+  /// Empty string clears the key. Windows then falls back to the folder
+  /// beside the program. macOS has no silent default: an empty path drops
+  /// the saved folder grant, and the next load asks for the system panel.
   /// Mobile: no-op. The system photo library is the only source.
   Future<void> setImagePath(String path);
 

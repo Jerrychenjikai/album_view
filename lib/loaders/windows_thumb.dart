@@ -171,9 +171,11 @@ Uint8List? _shellThumbnail(String path) {
     if (created < 0 || out.value == nullptr) return null;
     item = out.value;
 
-    final vtableAddress = item.cast<Pointer<IntPtr>>().value;
+    // item points at the vtable pointer. Slot 0 is QueryInterface, not the
+    // table base, so fromAddress needs elementAt(slot).value — GetImage is 3.
+    final vtable = item.cast<Pointer<IntPtr>>().value;
     final getImage = Pointer<NativeFunction<_GetImageC>>.fromAddress(
-      Pointer<IntPtr>.fromAddress(vtableAddress.value).elementAt(3).value,
+      vtable.elementAt(3).value,
     ).asFunction<_GetImageD>();
     final size = calloc<_SIZE>();
     final bitmapOut = calloc<IntPtr>();
@@ -230,9 +232,9 @@ Uint8List? _shellThumbnail(String path) {
   } finally {
     if (bitmap != 0) deleteObject(bitmap);
     if (item != nullptr) {
-      final vtableAddress = item.cast<Pointer<IntPtr>>().value;
+      final vtable = item.cast<Pointer<IntPtr>>().value;
       final release = Pointer<NativeFunction<_ReleaseC>>.fromAddress(
-        Pointer<IntPtr>.fromAddress(vtableAddress.value).elementAt(2).value,
+        vtable.elementAt(2).value,
       ).asFunction<_ReleaseD>();
       release(item);
     }

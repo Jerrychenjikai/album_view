@@ -1,9 +1,11 @@
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../loaders/image_loader.dart';
 import '../models/media_asset.dart';
+import '../models/media_batch.dart';
 import '../state/album_controller.dart';
 import '../theme/app_theme.dart';
 import '../timeline/time_resolution.dart';
@@ -23,12 +25,20 @@ class AlbumHomePage extends StatefulWidget {
 class _AlbumHomePageState extends State<AlbumHomePage> {
   AlbumController get controller => widget.controller;
   double _track = 640;
+  List<MediaBatch>? _cachedBatches;
+  (int, QuickRange, MediaKind?, double, double)? _layoutKey;
+
+  bool _picking = false;
 
   @override
   void initState() {
     super.initState();
     controller.addListener(_onChange);
-    controller.reload();
+    if (defaultTargetPlatform == TargetPlatform.macOS) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _bootMac());
+    } else {
+      controller.reload();
+    }
   }
 
   @override
@@ -39,6 +49,26 @@ class _AlbumHomePageState extends State<AlbumHomePage> {
 
   void _onChange() {
     if (mounted) setState(() {});
+  }
+
+  /// While a zoom gesture is in progress the groupings stay put, so don't
+  /// rebuild every stack on each wheel tick. Progress ticks that don't add
+  /// photos reuse the same arrangement too.
+  List<MediaBatch> _layout(double track) {
+    if (controller.zooming && _cachedBatches != null) return _cachedBatches!;
+    final key = (
+      identityHashCode(controller.master),
+      controller.quickRange,
+      controller.kind,
+      controller.viewport.pixelsPerDay,
+      track,
+    );
+    final cached = _cachedBatches;
+    if (cached != null && _layoutKey == key) return cached;
+    final next = controller.layout(track);
+    _layoutKey = key;
+    _cachedBatches = next;
+    return next;
   }
 
   @override
@@ -80,7 +110,7 @@ class _AlbumHomePageState extends State<AlbumHomePage> {
                                   if (mounted && (_track - track).abs() > 1) setState(() => _track = track);
                                 });
                               }
-                              final batches = controller.layout(track);
+                              final batches = _layout(track);
                               return TimelineBoard(
                                 controller: controller,
                                 trackHeight: track,
@@ -131,9 +161,53 @@ class _AlbumHomePageState extends State<AlbumHomePage> {
     controller.zoomAt(focalScreenX: width / 2, factor: factor, viewWidth: width);
   }
 
+  Future<void> _bootMac() async {
+    if (!mounted) return;
+    final stored = await controller.loader.storedImagePath();
+    if (!mounted) return;
+    if (stored == null || stored.isEmpty) {
+      await _pickMacFolder();
+      return;
+    }
+    await controller.reload();
+  }
+
+  Future<void> _pickMacFolder() async {
+    if (_picking) return;
+    _picking = true;
+    try {
+      final stored = await controller.loader.storedImagePath();
+      final initial = stored != null && stored.startsWith('/') ? stored : null;
+      final picked = await FilePicker.platform.getDirectoryPath(
+        dialogTitle: '选择照片文件夹',
+        lockParentWindow: true,
+        initialDirectory: initial,
+      );
+      if (!mounted) return;
+      if (picked == null || picked.trim().isEmpty) {
+        if (controller.master.isEmpty && !controller.loading) {
+          await controller.reload();
+        }
+        return;
+      }
+      await controller.setFolder(picked.trim());
+    } catch (error) {
+      if (!mounted) return;
+      final text = error is LibraryException ? error.message : '没法打开文件夹窗口';
+      controller.error = text;
+      setState(() {});
+    } finally {
+      _picking = false;
+    }
+  }
+
   Future<void> _editFolder() async {
     final mobile = defaultTargetPlatform == TargetPlatform.iOS || defaultTargetPlatform == TargetPlatform.android;
     if (mobile || !controller.loader.canConfigureFolder) return;
+    if (defaultTargetPlatform == TargetPlatform.macOS) {
+      await _pickMacFolder();
+      return;
+    }
     final stored = await controller.loader.storedImagePath();
     if (!mounted) return;
     final field = TextEditingController(text: stored ?? '');
@@ -148,7 +222,7 @@ class _AlbumHomePageState extends State<AlbumHomePage> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               const Text(
-                '写入 shared preferences 的 image_path。留空则改回 app 所在文件夹。会读取该目录以及所有子文件夹里的照片和视频。',
+                '填写照片所在的文件夹。留空则改回程序旁边的文件夹。会连同子文件夹里的照片和视频一起读。',
                 style: TextStyle(color: DeskColors.muted, fontSize: 13, height: 1.45),
               ),
               const SizedBox(height: 14),
@@ -157,7 +231,7 @@ class _AlbumHomePageState extends State<AlbumHomePage> {
                 autofocus: true,
                 style: const TextStyle(color: DeskColors.paper),
                 decoration: const InputDecoration(
-                  hintText: '/Users/me/Pictures',
+                  hintText: r'D:\Photos',
                   hintStyle: TextStyle(color: DeskColors.muted),
                   enabledBorder: UnderlineInputBorder(borderSide: BorderSide(color: DeskColors.line)),
                   focusedBorder: UnderlineInputBorder(borderSide: BorderSide(color: DeskColors.amber)),
@@ -221,7 +295,13 @@ class _Toolbar extends StatelessWidget {
                 onPressed: () => controller.revealToday(MediaQuery.sizeOf(context).width),
               ),
               if (allowFolder)
-                _IconButton(tooltip: '照片文件夹', label: '来源', onPressed: onFolder),
+                _IconButton(
+                  tooltip: defaultTargetPlatform == TargetPlatform.macOS ? '选择文件夹' : '照片文件夹',
+                  label: '来源',
+                  onPressed: onFolder,
+                ),
+              if (!controller.loading && (controller.error != null || controller.master.isEmpty))
+                _IconButton(tooltip: '重新读取', label: '读取', onPressed: () => controller.reload()),
             ],
           ),
           if (controller.loading)
@@ -249,14 +329,24 @@ class _Toolbar extends StatelessWidget {
                 ],
               ),
             ),
+          if (!controller.loading && controller.sourceLabel.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 6, right: 8),
+              child: Text(
+                controller.sourceLabel,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(color: DeskColors.muted, fontSize: 12),
+              ),
+            ),
           if (controller.error != null)
             Padding(
               padding: const EdgeInsets.only(top: 4, right: 8),
               child: Text(
                 controller.error!,
-                maxLines: 1,
+                maxLines: 3,
                 overflow: TextOverflow.ellipsis,
-                style: const TextStyle(color: Color(0xFFE07A62), fontSize: 12),
+                style: const TextStyle(color: Color(0xFFE07A62), fontSize: 12, height: 1.35),
               ),
             ),
           const SizedBox(height: 6),

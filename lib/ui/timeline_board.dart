@@ -2,6 +2,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 
 import '../models/media_batch.dart';
 import '../state/album_controller.dart';
@@ -40,11 +41,17 @@ class _TimelineBoardState extends State<TimelineBoard> with SingleTickerProvider
 
   late final AnimationController _flightClock;
   ResolutionFlight? _flight;
-  String _prevIds = '';
+  bool _hasPrev = false;
+  int _prevSig = 0;
   List<MediaBatch>? _prevBatches;
   double _prevPpd = 1;
   double _prevResolutionDays = 1;
   double _poseT = 0;
+  bool _zoomHold = false;
+  List<MediaBatch>? _heldBatches;
+  double _heldPpd = 1;
+  double _heldDays = 1;
+  bool _wasLoading = false;
 
   @override
   void initState() {
@@ -66,17 +73,49 @@ class _TimelineBoardState extends State<TimelineBoard> with SingleTickerProvider
   @override
   void didUpdateWidget(TimelineBoard oldWidget) {
     super.didUpdateWidget(oldWidget);
-    final ids = _signature(widget.batches);
+    final sig = _signature(widget.batches);
     final ppd = widget.controller.viewport.pixelsPerDay;
     final days = widget.controller.resolutionFor(widget.trackHeight).days;
-    if (_prevIds.isEmpty) {
-      _remember(ids, ppd, days);
+    final loading = widget.controller.loading;
+    final zooming = widget.controller.zooming;
+
+    if (!_hasPrev) {
+      _remember(sig, ppd, days);
+      _wasLoading = loading;
       return;
     }
-    if (ids != _prevIds) {
+
+    // While the scale is still moving, keep the groupings from when the
+    // gesture started. One flight runs after the wheel, pinch, or buttons stop.
+    if (zooming) {
+      if (!_zoomHold) {
+        _zoomHold = true;
+        _heldBatches = _prevBatches ?? oldWidget.batches;
+        _heldPpd = _prevPpd;
+        _heldDays = _prevResolutionDays;
+        _flight = null;
+        _flightClock.stop();
+      }
+      _wasLoading = loading;
+      return;
+    }
+
+    if (_zoomHold) {
+      _finishZoomHold(sig, ppd, days, loading);
+      _wasLoading = loading;
+      return;
+    }
+
+    if (sig != _prevSig) {
       final reduce = MediaQuery.disableAnimationsOf(context);
       final previous = _prevBatches;
-      if (!reduce && previous != null && previous.isNotEmpty && widget.batches.isNotEmpty) {
+      final skip = loading ||
+          _wasLoading ||
+          reduce ||
+          previous == null ||
+          previous.isEmpty ||
+          widget.batches.isEmpty;
+      if (!skip) {
         final from = _flight == null ? previous : _visualBatches(ppd);
         final fromPpd = _flight == null ? _prevPpd : ppd;
         _begin(planResolutionFlight(
@@ -88,19 +127,51 @@ class _TimelineBoardState extends State<TimelineBoard> with SingleTickerProvider
         ));
       } else {
         _flight = null;
+        _flightClock.stop();
       }
     }
-    _remember(ids, ppd, days);
+    _remember(sig, ppd, days);
+    _wasLoading = loading;
   }
 
-  void _remember(String ids, double ppd, double days) {
-    _prevIds = ids;
+  void _finishZoomHold(int sig, double ppd, double days, bool loading) {
+    final from = _heldBatches;
+    final fromPpd = _heldPpd;
+    final fromDays = _heldDays;
+    _zoomHold = false;
+    _heldBatches = null;
+    final to = widget.batches;
+    _remember(sig, ppd, days);
+    final reduce = MediaQuery.disableAnimationsOf(context);
+    if (loading || _wasLoading || reduce || from == null || from.isEmpty || to.isEmpty || _signature(from) == sig) {
+      _flight = null;
+      _flightClock.stop();
+      return;
+    }
+    _begin(planResolutionFlight(
+      from: from,
+      fromPpd: fromPpd,
+      to: to,
+      toPpd: ppd,
+      coarser: days > fromDays + 1e-6,
+    ));
+  }
+
+  void _remember(int sig, double ppd, double days) {
+    _hasPrev = true;
+    _prevSig = sig;
     _prevBatches = widget.batches;
     _prevPpd = ppd;
     _prevResolutionDays = days;
   }
 
-  String _signature(List<MediaBatch> batches) => batches.map((batch) => batch.id).join('|');
+  int _signature(List<MediaBatch> batches) {
+    var hash = batches.length;
+    for (final batch in batches) {
+      hash = 0x1fffffff & ((hash * 33) ^ batch.id.hashCode);
+    }
+    return hash;
+  }
 
   void _begin(ResolutionFlight flight) {
     _flight = flight;
@@ -134,13 +205,16 @@ class _TimelineBoardState extends State<TimelineBoard> with SingleTickerProvider
   Widget build(BuildContext context) {
     final scroll = widget.controller.viewport.scrollX;
     final ppd = widget.controller.viewport.pixelsPerDay;
+    final held = _zoomHold ? _heldBatches : null;
+    final source = held ?? widget.batches;
+    final xScale = held == null || _heldPpd <= 0 ? 1.0 : ppd / _heldPpd;
     final visible = <MediaBatch>[];
     final margin = TimelineMetrics.footprintWidth;
-    for (final batch in widget.batches) {
-      final screen = batch.position.dx - scroll;
-      if (screen >= -margin && screen <= widget.viewWidth + margin) {
-        visible.add(batch);
-      }
+    for (final batch in source) {
+      final x = batch.position.dx * xScale;
+      final screen = x - scroll;
+      if (screen < -margin || screen > widget.viewWidth + margin) continue;
+      visible.add(xScale == 1 ? batch : batch.copyWith(position: Offset(x, batch.position.dy)));
     }
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -167,6 +241,7 @@ class _TimelineBoardState extends State<TimelineBoard> with SingleTickerProvider
         onPointerSignal: _onSignal,
         onPointerPanZoomStart: _onPanZoomStart,
         onPointerPanZoomUpdate: _onPanZoomUpdate,
+        onPointerPanZoomEnd: _onPanZoomEnd,
         child: Stack(
           children: [
             Positioned.fill(
@@ -219,10 +294,35 @@ class _TimelineBoardState extends State<TimelineBoard> with SingleTickerProvider
                     onTap: () {},
                   ),
             ],
+            if (!widget.controller.loading && widget.batches.isEmpty)
+              Positioned.fill(
+                child: Center(
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(24, 48, 24, 24),
+                    child: Text(
+                      _emptyCopy(),
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(color: DeskColors.muted, fontSize: 13, height: 1.45),
+                    ),
+                  ),
+                ),
+              ),
           ],
         ),
       ),
     );
+  }
+
+  String _emptyCopy() {
+    final place = widget.controller.sourceLabel;
+    if (place == '系统相册') {
+      return '相册里没有照片。\n如果刚允许了权限，点「读取」再试一次。';
+    }
+    if (defaultTargetPlatform == TargetPlatform.macOS && place.isEmpty) {
+      return '还没有选照片文件夹。\n点「来源」，在系统弹窗里选一个文件夹。';
+    }
+    if (place.isEmpty) return '没有照片。点「读取」再试一次。';
+    return '没有在这里找到照片：\n$place\n系统「照片」图库不会被拆开。可以点「来源」换一个文件夹，再点「读取」。';
   }
 
   Widget _placedBatch({
@@ -265,7 +365,7 @@ class _TimelineBoardState extends State<TimelineBoard> with SingleTickerProvider
   }
 
   void _handleTap(MediaBatch batch) {
-    if (_dragged || _flight != null) return;
+    if (_dragged || _flight != null || _zoomHold || widget.controller.zooming) return;
     final box = context.findRenderObject() as RenderBox?;
     Offset? origin;
     if (box != null && box.hasSize) {
@@ -303,10 +403,12 @@ class _TimelineBoardState extends State<TimelineBoard> with SingleTickerProvider
   }
 
   void _onPointerUp(PointerEvent event) {
+    final wasPinch = _pinchStartDistance != null || _pointers.length >= 2;
     _pointers.remove(event.pointer);
     _pinchStartDistance = null;
     _pinchStartPpd = null;
     _pinchFocalDay = null;
+    if (wasPinch) widget.controller.endZoomGesture();
   }
 
   void _beginPinch() {
@@ -333,6 +435,11 @@ class _TimelineBoardState extends State<TimelineBoard> with SingleTickerProvider
       focalScreenX: mid.dx,
       viewWidth: widget.viewWidth,
     );
+  }
+
+  void _onPanZoomEnd(PointerPanZoomEndEvent event) {
+    _panZoomScale = 1;
+    widget.controller.endZoomGesture();
   }
 
   void _onSignal(PointerSignalEvent event) {
