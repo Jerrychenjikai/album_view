@@ -51,7 +51,10 @@ class DesktopLibrary {
     return root.path + suffix;
   }
 
-  Future<List<MediaAsset>> load({MediaFilter filter = const MediaFilter()}) async {
+  Future<List<MediaAsset>> load({
+    MediaFilter filter = const MediaFilter(),
+    void Function(List<MediaAsset> batch)? onBatch,
+  }) async {
     final root = await resolveRoot();
     if (!await root.exists()) {
       throw LibraryException(
@@ -61,7 +64,18 @@ class DesktopLibrary {
     }
 
     final found = <MediaAsset>[];
-    await _walk(root, root, found, filter);
+    final pending = <MediaAsset>[];
+    void take(MediaAsset asset) {
+      found.add(asset);
+      pending.add(asset);
+      if (pending.length >= 24) {
+        onBatch?.call(List<MediaAsset>.from(pending));
+        pending.clear();
+      }
+    }
+
+    await _walk(root, root, take, filter);
+    if (pending.isNotEmpty) onBatch?.call(List<MediaAsset>.from(pending));
     found.sort((a, b) => a.createdAt.compareTo(b.createdAt));
     return found;
   }
@@ -69,7 +83,7 @@ class DesktopLibrary {
   Future<void> _walk(
     Directory directory,
     Directory root,
-    List<MediaAsset> into,
+    void Function(MediaAsset asset) take,
     MediaFilter filter,
   ) async {
     final List<FileSystemEntity> children;
@@ -81,12 +95,12 @@ class DesktopLibrary {
     for (final entity in children) {
       if (entity is Directory) {
         if (_skipDirectory(p.basename(entity.path))) continue;
-        await _walk(entity, root, into, filter);
+        await _walk(entity, root, take, filter);
       } else if (entity is File) {
         final asset = await _assetFromFile(entity);
         if (asset == null) continue;
         if (!filter.accepts(asset)) continue;
-        into.add(asset);
+        take(asset);
       }
     }
   }

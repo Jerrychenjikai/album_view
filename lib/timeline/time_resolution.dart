@@ -1,3 +1,4 @@
+import '../models/media_asset.dart';
 import 'timeline_metrics.dart';
 import 'day_number.dart';
 
@@ -113,6 +114,21 @@ class TimeScale {
       span += 3;
     }
     return TimeResolution.years(span);
+  }
+
+  /// Next finer step on the same ladder. Null when [resolution] is already one hour.
+  static TimeResolution? finerThan(TimeResolution resolution) {
+    if (resolution.unit == TimeUnit.years && resolution.step > 3) {
+      return TimeResolution.years(resolution.step - 3);
+    }
+    if (resolution.unit == TimeUnit.years) return TimeResolution.year;
+    final index = _ladder.indexWhere((item) => item.unit == resolution.unit && item.step == resolution.step);
+    if (index > 0) return _ladder[index - 1];
+    if (index == 0) return null;
+    for (var i = _ladder.length - 1; i >= 0; i--) {
+      if (_ladder[i].days < resolution.days - 1e-9) return _ladder[i];
+    }
+    return null;
   }
 
   /// Smallest scale at which [times] still fit inside [viewWidth].
@@ -423,3 +439,77 @@ List<ShadeBand> _yearBands(double lo, double hi) {
 String _two(int value) => value.toString().padLeft(2, '0');
 
 String _stamp(DateTime day) => '${day.year}-${_two(day.month)}-${_two(day.day)}';
+
+/// A batch preview page stays under this many photos.
+const int previewPhotoLimit = 200;
+
+class PreviewSlice {
+  final String id;
+  final String label;
+  final List<MediaAsset> items;
+
+  const PreviewSlice({required this.id, required this.label, required this.items});
+}
+
+/// Splits [items] with the timeline ladder until every slice has at most
+/// [previewPhotoLimit] photos. A hour that is still larger is split evenly.
+List<PreviewSlice> previewSlices(List<MediaAsset> items, TimeResolution from) {
+  if (items.length <= previewPhotoLimit) {
+    return [PreviewSlice(id: 'all', label: '', items: items)];
+  }
+  var resolution = TimeScale.finerThan(from);
+  var groups = resolution == null ? [_whole(items)] : _groupAssets(items, resolution);
+  while (resolution != null && groups.any((group) => group.items.length > previewPhotoLimit)) {
+    final next = TimeScale.finerThan(resolution);
+    if (next == null) break;
+    resolution = next;
+    groups = _groupAssets(items, resolution);
+  }
+  return [for (final group in groups) ..._cap(group)];
+}
+
+PreviewSlice _whole(List<MediaAsset> items) {
+  final sorted = [...items]..sort((a, b) => a.createdAt.compareTo(b.createdAt));
+  return PreviewSlice(id: 'all', label: '', items: sorted);
+}
+
+List<PreviewSlice> _groupAssets(List<MediaAsset> items, TimeResolution resolution) {
+  final grouped = <String, List<MediaAsset>>{};
+  final labels = <String, String>{};
+  final centers = <String, double>{};
+  for (final asset in items) {
+    final bucket = bucketFor(asset.createdAt.toLocal(), resolution);
+    grouped.putIfAbsent(bucket.id, () => []).add(asset);
+    labels[bucket.id] = bucket.label;
+    centers[bucket.id] = bucket.centerDays;
+  }
+  final ids = grouped.keys.toList()..sort((a, b) => centers[a]!.compareTo(centers[b]!));
+  return [
+    for (final id in ids)
+      PreviewSlice(
+        id: id,
+        label: labels[id]!,
+        items: [...grouped[id]!]..sort((a, b) => a.createdAt.compareTo(b.createdAt)),
+      ),
+  ];
+}
+
+List<PreviewSlice> _cap(PreviewSlice group) {
+  if (group.items.length <= previewPhotoLimit) return [group];
+  final parts = (group.items.length / (previewPhotoLimit - 1)).ceil();
+  final base = group.items.length ~/ parts;
+  var extra = group.items.length % parts;
+  var cursor = 0;
+  final slices = <PreviewSlice>[];
+  for (var i = 0; i < parts; i++) {
+    final size = base + (extra > 0 ? 1 : 0);
+    if (extra > 0) extra--;
+    slices.add(PreviewSlice(
+      id: '${group.id}#${i + 1}',
+      label: group.label.isEmpty ? '${i + 1}/$parts' : '${group.label} ${i + 1}/$parts',
+      items: group.items.sublist(cursor, cursor + size),
+    ));
+    cursor += size;
+  }
+  return slices;
+}

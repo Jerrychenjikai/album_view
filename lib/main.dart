@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 
-import 'loaders/ios_image_loader.dart';
+import 'loaders/windows_image_loader.dart';
 import 'state/album_controller.dart';
 import 'theme/app_theme.dart';
 import 'ui/album_home_page.dart';

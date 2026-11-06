@@ -9,11 +9,13 @@ import 'package:flutter/material.dart';
 import '../models/media_asset.dart';
 import '../theme/app_theme.dart';
 import '../timeline/day_number.dart';
+import '../timeline/time_resolution.dart';
 
 /// Blurred light table, with one batch laid out in as many rows as the track.
 class BatchPreview extends StatefulWidget {
   final List<MediaAsset> items;
   final int rows;
+  final TimeResolution resolution;
   final Offset? originGlobal;
   final Future<String?> Function(MediaAsset asset)? resolveOriginal;
   final Future<void> Function(MediaAsset asset)? onReveal;
@@ -24,6 +26,7 @@ class BatchPreview extends StatefulWidget {
     super.key,
     required this.items,
     required this.rows,
+    required this.resolution,
     required this.onClose,
     this.originGlobal,
     this.resolveOriginal,
@@ -35,25 +38,29 @@ class BatchPreview extends StatefulWidget {
   State<BatchPreview> createState() => _BatchPreviewState();
 }
 
-class _BatchPreviewState extends State<BatchPreview> with SingleTickerProviderStateMixin {
+class _BatchPreviewState extends State<BatchPreview> with TickerProviderStateMixin {
   final Map<String, GlobalKey> _keys = {};
   final Map<String, GlobalKey> _locateKeys = {};
   final Map<int, Offset> _pointers = {};
   final Set<String> _flipped = {};
+  final GlobalKey _barKey = GlobalKey();
 
   double _travel = 0;
   bool _dragged = false;
+  bool _held = false;
   String? _zoomId;
   double _scale = 1;
   Offset _pan = Offset.zero;
   _Pinch? _pinch;
-  Size _card = const Size(180, 220);
+  Size _view = Size.zero;
   double _offset = 0;
   double _maxOffset = 0;
-  double _zoomOpacity = 0;
-  Timer? _zoomDismiss;
-  Timer? _zoomIdle;
+  Timer? _hold;
+  String? _holdId;
+  String? _sliceId;
   late final AnimationController _spread;
+  late final AnimationController _pop;
+  int _photoTicket = 0;
   bool _closing = false;
   String? _originFor;
   String? _originPath;
@@ -63,6 +70,10 @@ class _BatchPreviewState extends State<BatchPreview> with SingleTickerProviderSt
   void initState() {
     super.initState();
     _spread = AnimationController(vsync: this, duration: const Duration(milliseconds: 560))
+      ..addListener(() {
+        if (mounted) setState(() {});
+      });
+    _pop = AnimationController(vsync: this, duration: const Duration(milliseconds: 340))
       ..addListener(() {
         if (mounted) setState(() {});
       });
@@ -78,9 +89,9 @@ class _BatchPreviewState extends State<BatchPreview> with SingleTickerProviderSt
 
   @override
   void dispose() {
-    _zoomDismiss?.cancel();
-    _zoomIdle?.cancel();
+    _hold?.cancel();
     _spread.dispose();
+    _pop.dispose();
     super.dispose();
   }
 
@@ -137,35 +148,37 @@ class _BatchPreviewState extends State<BatchPreview> with SingleTickerProviderSt
     required double gap,
     required double gridH,
     required double offset,
+    required double topInset,
+    required int count,
+    required List<MediaAsset> page,
     required Offset origin,
     required double t,
     required BoxConstraints constraints,
   }) {
-    final asset = widget.items[index];
+    final asset = page[index];
     final col = index ~/ rows;
     final row = index % rows;
+    final usable = constraints.maxHeight - topInset;
     final target = Offset(
       28 + col * stride + cardW / 2 - offset,
-      (constraints.maxHeight - gridH) / 2 + row * (cardH + gap) + cardH / 2,
+      topInset + (usable - gridH) / 2 + row * (cardH + gap) + cardH / 2,
     );
-    final depth = math.min(3, math.max(0, widget.items.length - 1 - index));
+    final depth = math.min(3, math.max(0, count - 1 - index));
     final fan = Offset(depth == 0 ? 0 : -depth * 7.0, depth * 5.0);
     final center = Offset.lerp(origin + fan, target, t)!;
     final w = _lerp(142, cardW, t);
     final h = _lerp(172, cardH, t);
-    final hidden = _zoomId == asset.id && _zoomOpacity > 0.35;
-    // Invisible at the first moment so the new cards can mount, then fade in.
-    // On the way out, opacity is already 0 before the overlay is removed.
-    final fade = hidden ? 0.0 : ((t - 0.02) / 0.4).clamp(0.0, 1.0).toDouble();
+    final fade = ((t - 0.02) / 0.4).clamp(0.0, 1.0).toDouble();
+    final popped = asset.id == _zoomId ? (1 - Curves.easeOutCubic.transform(_pop.value.clamp(0.0, 1.0))) : 1.0;
     return Positioned(
       left: center.dx - w / 2,
       top: center.dy - h / 2,
       width: w,
       height: h,
       child: IgnorePointer(
-        ignoring: fade < 0.04,
+        ignoring: fade < 0.04 || _zoomId != null,
         child: Opacity(
-          opacity: fade,
+          opacity: fade * popped,
           child: SizedBox(
             key: _keyFor(asset.id),
             width: w,
@@ -183,38 +196,82 @@ class _BatchPreviewState extends State<BatchPreview> with SingleTickerProviderSt
     );
   }
 
-  double _lerp(double a, double b, double t) => a + (b - a) * t;
+  List<PreviewSlice> get _slices => previewSlices(widget.items, widget.resolution);
 
-  void _keepZoom() {
-    _zoomIdle?.cancel();
-    _zoomDismiss?.cancel();
+  List<MediaAsset> _pageOf(List<PreviewSlice> slices) {
+    if (slices.isEmpty) return widget.items;
+    for (final slice in slices) {
+      if (slice.id == _sliceId) return slice.items;
+    }
+    return slices.last.items;
   }
 
-  void _armZoomEnd() {
-    _zoomIdle?.cancel();
-    _zoomIdle = Timer(const Duration(milliseconds: 140), _dismissZoom);
+  void _cancelHold() {
+    _hold?.cancel();
+    _hold = null;
+    _holdId = null;
   }
 
-  void _dismissZoom() {
+  void _toggleFlip(String id) {
+    setState(() {
+      if (_flipped.contains(id)) {
+        _flipped.remove(id);
+      } else {
+        _flipped.add(id);
+      }
+    });
+  }
+
+  void _openPhoto(String id) {
+    _photoTicket++;
+    _armOriginal(id);
+    setState(() {
+      _zoomId = id;
+      _scale = 1;
+      _pan = Offset.zero;
+    });
+    if (MediaQuery.disableAnimationsOf(context)) {
+      _pop.value = 1;
+    } else {
+      _pop.forward(from: 0);
+    }
+  }
+
+  void _leavePhoto() {
     if (_zoomId == null) return;
-    setState(() => _zoomOpacity = 0);
-    _zoomDismiss?.cancel();
-    _zoomDismiss = Timer(const Duration(milliseconds: 180), () {
-      if (!mounted) return;
+    final ticket = ++_photoTicket;
+    if (MediaQuery.disableAnimationsOf(context)) {
+      _pop.value = 0;
       setState(() {
         _zoomId = null;
         _scale = 1;
         _pan = Offset.zero;
-        _zoomOpacity = 0;
+      });
+      return;
+    }
+    _pop.reverse().whenComplete(() {
+      if (!mounted || ticket != _photoTicket) return;
+      setState(() {
+        _zoomId = null;
+        _scale = 1;
+        _pan = Offset.zero;
       });
     });
   }
 
+  bool _inBar(Offset global) {
+    final box = _barKey.currentContext?.findRenderObject() as RenderBox?;
+    if (box == null || !box.hasSize) return false;
+    final local = box.globalToLocal(global);
+    return local.dx >= 0 && local.dy >= 0 && local.dx <= box.size.width && local.dy <= box.size.height;
+  }
+
+  double _lerp(double a, double b, double t) => a + (b - a) * t;
+
   void _requestClose() {
     if (_closing) return;
     _closing = true;
-    _zoomIdle?.cancel();
-    _zoomDismiss?.cancel();
+    _cancelHold();
     if (MediaQuery.disableAnimationsOf(context) || _spread.value <= 0.02) {
       widget.onClose();
       return;
@@ -227,14 +284,25 @@ class _BatchPreviewState extends State<BatchPreview> with SingleTickerProviderSt
   @override
   Widget build(BuildContext context) {
     final rows = math.max(1, widget.rows);
+    final slices = _slices;
+    final page = _pageOf(slices);
+    final activeId = slices.isEmpty
+        ? ''
+        : slices.any((slice) => slice.id == _sliceId)
+            ? _sliceId
+            : slices.last.id;
+    final showBar = slices.length > 1;
+    final popping = _zoomId != null && _pop.value > 0.01;
+    final blur = 8 * Curves.easeOutCubic.transform(_pop.value.clamp(0.0, 1.0));
     return LayoutBuilder(
       builder: (context, constraints) {
         final gap = 16.0;
-        final cardH = ((constraints.maxHeight - 36 - gap * (rows - 1)) / rows).clamp(120.0, 440.0).toDouble();
+        final bar = showBar ? 52.0 : 0.0;
+        final cardH = ((constraints.maxHeight - 36 - bar - gap * (rows - 1)) / rows).clamp(120.0, 440.0).toDouble();
         final cardW = cardH * 142 / 172;
-        _card = Size(cardW, cardH);
+        _view = Size(constraints.maxWidth, constraints.maxHeight);
         final stride = cardW + 20;
-        final columnCount = (widget.items.length / rows).ceil();
+        final columnCount = (page.length / rows).ceil();
         final gridH = rows * cardH + (rows - 1) * gap;
         _maxOffset = math.max(0.0, 36 + columnCount * stride - constraints.maxWidth);
         final offset = _offset.clamp(0.0, _maxOffset);
@@ -256,7 +324,7 @@ class _BatchPreviewState extends State<BatchPreview> with SingleTickerProviderSt
                 color: Color.fromARGB(veil, 0x1A, 0x16, 0x12),
                 child: Stack(
                   children: [
-                    for (var index = 0; index < widget.items.length; index++)
+                    for (var index = 0; index < page.length; index++)
                       if (_showCard(index, rows, stride, cardW, offset, constraints.maxWidth, t))
                         _placedCard(
                           index: index,
@@ -267,16 +335,71 @@ class _BatchPreviewState extends State<BatchPreview> with SingleTickerProviderSt
                           gap: gap,
                           gridH: gridH,
                           offset: offset,
+                          topInset: bar,
+                          count: page.length,
+                          page: page,
                           origin: origin,
                           t: t,
                           constraints: constraints,
                         ),
-                    if (_zoomId != null)
-                      AnimatedOpacity(
-                        opacity: _zoomOpacity,
-                        duration: const Duration(milliseconds: 160),
-                        child: _zoomed(cardW, cardH),
+                    if (popping)
+                      Positioned.fill(
+                        child: IgnorePointer(
+                          child: BackdropFilter(
+                            filter: ImageFilter.blur(sigmaX: blur, sigmaY: blur),
+                            child: ColoredBox(
+                              color: Color.fromRGBO(0x1A, 0x16, 0x12, 0.2 * _pop.value.clamp(0.0, 1.0)),
+                            ),
+                          ),
+                        ),
                       ),
+                    if (showBar)
+                      Positioned(
+                        key: _barKey,
+                        top: 8,
+                        left: 0,
+                        right: 0,
+                        height: 40,
+                        child: IgnorePointer(
+                          ignoring: _zoomId != null,
+                          child: ListView.separated(
+                            scrollDirection: Axis.horizontal,
+                            padding: const EdgeInsets.symmetric(horizontal: 12),
+                            itemCount: slices.length,
+                            separatorBuilder: (_, __) => const SizedBox(width: 8),
+                            itemBuilder: (context, index) {
+                              final slice = slices[index];
+                              final selected = slice.id == activeId;
+                              return GestureDetector(
+                                onTap: () {
+                                  setState(() {
+                                    _sliceId = slice.id;
+                                    _offset = 0;
+                                  });
+                                },
+                                child: Container(
+                                  alignment: Alignment.center,
+                                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                                  decoration: BoxDecoration(
+                                    color: selected ? DeskColors.amber : Colors.transparent,
+                                    borderRadius: BorderRadius.circular(999),
+                                    border: Border.all(color: selected ? DeskColors.amber : DeskColors.line),
+                                  ),
+                                  child: Text(
+                                    '${slice.label}  ${slice.items.length}',
+                                    style: TextStyle(
+                                      color: selected ? DeskColors.ink : DeskColors.paper,
+                                      fontSize: 13,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                ),
+                              );
+                            },
+                          ),
+                        ),
+                      ),
+                    if (_zoomId != null) _zoomed(),
                     Positioned(
                       left: 0,
                       right: 0,
@@ -284,10 +407,12 @@ class _BatchPreviewState extends State<BatchPreview> with SingleTickerProviderSt
                       child: IgnorePointer(
                         child: Opacity(
                           opacity: t,
-                          child: const Text(
-                            '点一张翻到背面    双指或滚轮看原图    点空白返回',
+                          child: Text(
+                            _zoomId == null
+                                ? '点一张看原图    长按或右键翻面    点空白返回'
+                                : '拖动移动    双指或滚轮缩放    点周围返回',
                             textAlign: TextAlign.center,
-                            style: TextStyle(color: DeskColors.muted, fontSize: 12),
+                            style: const TextStyle(color: DeskColors.muted, fontSize: 12),
                           ),
                         ),
                       ),
@@ -302,27 +427,63 @@ class _BatchPreviewState extends State<BatchPreview> with SingleTickerProviderSt
     );
   }
 
-  Widget _zoomed(double cardW, double cardH) {
+  Size _fitPhoto(Size view) {
+    MediaAsset? asset;
+    for (final item in widget.items) {
+      if (item.id == _zoomId) asset = item;
+    }
+    final aw = (asset?.orientedWidth ?? 3).toDouble();
+    final ah = (asset?.orientedHeight ?? 2).toDouble();
+    final aspect = ah <= 0 ? 1.5 : aw / ah;
+    var w = view.width * 0.92;
+    var h = w / aspect;
+    final maxH = view.height * 0.86;
+    if (h > maxH) {
+      h = maxH;
+      w = h * aspect;
+    }
+    return Size(w, h);
+  }
+
+  Widget _zoomed() {
     MediaAsset? asset;
     for (final item in widget.items) {
       if (item.id == _zoomId) asset = item;
     }
     if (asset == null) return const SizedBox.shrink();
-    return IgnorePointer(
-      child: Center(
-        child: Transform.translate(
-          offset: _pan,
-          child: Transform.scale(
-            scale: _scale,
-            child: SizedBox(
-              width: cardW,
-              height: cardH,
-              child: _OriginalPhoto(asset: asset, path: _originFor == asset.id ? _originPath : null),
-            ),
-          ),
+    final rect = _photoRect();
+    final t = Curves.easeOutCubic.transform(_pop.value.clamp(0.0, 1.0));
+    final visualScale = 1 + (_scale - 1) * t;
+    return Positioned(
+      left: rect.left,
+      top: rect.top,
+      width: rect.width,
+      height: rect.height,
+      child: IgnorePointer(
+        child: Transform.scale(
+          scale: visualScale,
+          child: _OriginalPhoto(asset: asset, path: _originFor == asset.id ? _originPath : null),
         ),
       ),
     );
+  }
+
+  Rect _photoRect() {
+    final t = Curves.easeOutCubic.transform(_pop.value.clamp(0.0, 1.0));
+    final view = _view == Size.zero ? const Size(1, 1) : _view;
+    final fitted = _fitPhoto(view);
+    final dest = Rect.fromCenter(
+      center: Offset(view.width / 2, view.height / 2) + _pan * t,
+      width: fitted.width,
+      height: fitted.height,
+    );
+    final id = _zoomId;
+    final render = id == null ? null : _keys[id]?.currentContext?.findRenderObject() as RenderBox?;
+    final overlay = context.findRenderObject() as RenderBox?;
+    if (render == null || !render.hasSize || overlay == null || !overlay.hasSize) return dest;
+    final origin = overlay.globalToLocal(render.localToGlobal(Offset.zero));
+    final card = origin & render.size;
+    return Rect.lerp(card, dest, t)!;
   }
 
   String _frontCaption(MediaAsset asset) {
@@ -332,8 +493,7 @@ class _BatchPreviewState extends State<BatchPreview> with SingleTickerProviderSt
     return '${local.month}月${local.day}日  $hh:$mm';
   }
 
-  String? _hit(Offset global) {
-    if (_insideZoom(global)) return _zoomId;
+  String? _hitCard(Offset global) {
     for (final item in widget.items.reversed) {
       final box = _keys[item.id]?.currentContext?.findRenderObject() as RenderBox?;
       if (box == null || !box.hasSize) continue;
@@ -345,37 +505,64 @@ class _BatchPreviewState extends State<BatchPreview> with SingleTickerProviderSt
     return null;
   }
 
-  bool _insideZoom(Offset global) {
-    if (_zoomId == null || _scale <= 1) return false;
+  bool get _photoReady => _zoomId != null && _pop.value > 0.98 && !_pop.isAnimating;
+
+  bool _insidePhoto(Offset global) {
+    if (_zoomId == null) return false;
     final box = context.findRenderObject() as RenderBox?;
     if (box == null || !box.hasSize) return false;
     final local = box.globalToLocal(global);
-    final center = box.size.center(Offset.zero) + _pan;
-    final rect = Rect.fromCenter(center: center, width: _card.width * _scale, height: _card.height * _scale);
-    return rect.contains(local);
+    final rect = _photoRect();
+    final t = Curves.easeOutCubic.transform(_pop.value.clamp(0.0, 1.0));
+    final scale = 1 + (_scale - 1) * t;
+    final hit = Rect.fromCenter(center: rect.center, width: rect.width * scale, height: rect.height * scale);
+    return hit.contains(local);
+  }
+
+  Offset _clampedPan(Offset pan, double scale) {
+    if (_view == Size.zero) return pan;
+    final fitted = _fitPhoto(_view);
+    final maxX = math.max(0.0, fitted.width * scale / 2 + _view.width / 2 - 48);
+    final maxY = math.max(0.0, fitted.height * scale / 2 + _view.height / 2 - 48);
+    return Offset(pan.dx.clamp(-maxX, maxX), pan.dy.clamp(-maxY, maxY));
   }
 
   void _down(PointerDownEvent event) {
+    final secondary = (event.buttons & kSecondaryMouseButton) != 0;
+    if (secondary) {
+      if (_zoomId != null || _spread.value < 0.98 || _inBar(event.position)) return;
+      final id = _hitCard(event.position);
+      if (id == null) return;
+      _held = true;
+      _toggleFlip(id);
+      return;
+    }
+    if (_inBar(event.position) && _zoomId == null) return;
     _pointers[event.pointer] = event.position;
     if (_pointers.length == 1) {
       _dragged = false;
+      _held = false;
       _travel = 0;
       _pinch = null;
+      _cancelHold();
+      if (_zoomId == null && _spread.value >= 0.98) {
+        final id = _hitCard(event.position);
+        if (id != null) {
+          _holdId = id;
+          _hold = Timer(const Duration(milliseconds: 480), () {
+            if (!mounted || _holdId != id || _zoomId != null) return;
+            _held = true;
+            _toggleFlip(id);
+          });
+        }
+      }
     }
-    if (_pointers.length == 2) {
-      if (_spread.value < 0.98) return;
+    if (_pointers.length >= 2) {
+      _cancelHold();
+      if (!_photoReady) return;
       final points = _pointers.values.toList();
       final dist = math.max(12.0, (points[0] - points[1]).distance);
-      final id = _hit(points[0]) ?? _hit(points[1]);
-      if (id != null) {
-        _keepZoom();
-        _pinch = _Pinch(id: id, dist: dist, scale: _zoomId == id ? _scale : 1, pan: _zoomId == id ? _pan : Offset.zero);
-        _armOriginal(id);
-        setState(() {
-          _zoomId = id;
-          _zoomOpacity = 1;
-        });
-      }
+      _pinch = _Pinch(dist: dist, scale: _scale, pan: _pan);
     }
   }
 
@@ -385,30 +572,26 @@ class _BatchPreviewState extends State<BatchPreview> with SingleTickerProviderSt
     _pointers[event.pointer] = event.position;
     final delta = event.position - previous;
     _travel += delta.distance;
-    if (_pointers.length >= 2 && _pinch != null) {
+    if (_travel >= 8) _cancelHold();
+    if (_pointers.length >= 2 && _pinch != null && _photoReady) {
       final points = _pointers.values.toList();
       final dist = math.max(12.0, (points[0] - points[1]).distance);
-      final scale = (_pinch!.scale * dist / _pinch!.dist).clamp(1.0, 5.0);
-      _keepZoom();
-      _armOriginal(_pinch!.id);
+      final scale = (_pinch!.scale * dist / _pinch!.dist).clamp(1.0, 6.0);
       setState(() {
-        _zoomId = _pinch!.id;
-        _scale = scale <= 1.02 ? 1 : scale;
-        _pan = _pinch!.pan;
-        _zoomOpacity = scale <= 1.02 ? 0 : 1;
-        if (_scale <= 1.02) {
-          _scale = 1;
-          _pan = Offset.zero;
-          _zoomId = null;
-        }
+        _scale = scale <= 1.001 ? 1 : scale;
+        _pan = _scale <= 1.001 ? Offset.zero : _clampedPan(_pinch!.pan, _scale);
       });
       _dragged = true;
       return;
     }
     if (!_dragged && _travel < 8) return;
     _dragged = true;
-    if (_zoomId != null && _zoomOpacity > 0.4 && _scale > 1 && _insideZoom(previous)) {
-      setState(() => _pan += delta);
+    if (_zoomId != null) {
+      if (!_photoReady) {
+        _dragged = true;
+        return;
+      }
+      setState(() => _pan = _clampedPan(_pan + delta, _scale));
       return;
     }
     setState(() {
@@ -417,13 +600,15 @@ class _BatchPreviewState extends State<BatchPreview> with SingleTickerProviderSt
   }
 
   void _up(PointerEvent event) {
-    final endedPinch = _pinch != null;
+    if (!_pointers.containsKey(event.pointer)) return;
     final wasDrag = _dragged || _travel >= 8;
+    final held = _held;
     _pointers.remove(event.pointer);
     if (_pointers.length < 2) _pinch = null;
-    if (endedPinch && _pointers.length < 2 && _zoomId != null && _scale > 1) _armZoomEnd();
+    _cancelHold();
     if (_spread.value < 0.98) return;
-    if (wasDrag || _pointers.isNotEmpty) return;
+    if (wasDrag || held || _pointers.isNotEmpty) return;
+    if (_inBar(event.position) && _zoomId == null) return;
     final located = _locateOwner(event.position);
     if (located != null) {
       final reveal = widget.onReveal;
@@ -436,19 +621,17 @@ class _BatchPreviewState extends State<BatchPreview> with SingleTickerProviderSt
       }
       return;
     }
-    final id = _hit(event.position);
+    if (_zoomId != null) {
+      if (!_photoReady) return;
+      if (!_insidePhoto(event.position)) _leavePhoto();
+      return;
+    }
+    final id = _hitCard(event.position);
     if (id == null) {
       _requestClose();
       return;
     }
-    if (_zoomId == id && _scale > 1 && _zoomOpacity > 0.4) return;
-    setState(() {
-      if (_flipped.contains(id)) {
-        _flipped.remove(id);
-      } else {
-        _flipped.add(id);
-      }
-    });
+    _openPhoto(id);
   }
 
   String? _locateOwner(Offset global) {
@@ -466,36 +649,27 @@ class _BatchPreviewState extends State<BatchPreview> with SingleTickerProviderSt
   void _signal(PointerSignalEvent event) {
     if (event is! PointerScrollEvent) return;
     if (_spread.value < 0.98) return;
-    final id = _hit(event.position);
-    if (id == null) {
+    if (_inBar(event.position) && _zoomId == null) return;
+    if (_zoomId != null) {
+      if (!_photoReady) return;
+      final scale = (_scale * math.exp(-event.scrollDelta.dy * 0.0016)).clamp(1.0, 6.0);
       setState(() {
-        _offset = (_offset + event.scrollDelta.dy).clamp(0.0, _maxOffset);
+        _scale = scale <= 1.001 ? 1 : scale;
+        _pan = _scale <= 1.001 ? Offset.zero : _clampedPan(_pan, _scale);
       });
       return;
     }
-    final base = _zoomId == id ? _scale : 1.0;
-    final scale = (base * math.exp(-event.scrollDelta.dy * 0.0016)).clamp(1.0, 5.0);
-    if (scale <= 1.02) {
-      _dismissZoom();
-      return;
-    }
-    _keepZoom();
-    _armOriginal(id);
     setState(() {
-      _zoomId = id;
-      _scale = scale;
-      _zoomOpacity = 1;
+      _offset = (_offset + event.scrollDelta.dy).clamp(0.0, _maxOffset);
     });
-    _armZoomEnd();
   }
 }
 
 class _Pinch {
-  final String id;
   final double dist;
   final double scale;
   final Offset pan;
-  const _Pinch({required this.id, required this.dist, required this.scale, required this.pan});
+  const _Pinch({required this.dist, required this.scale, required this.pan});
 }
 
 class _Polaroid extends StatelessWidget {

@@ -21,7 +21,12 @@ abstract interface class ImageLoader {
 
   /// Returns every image and video that matches [filter].
   /// Thumbnails may still be empty; call [ensureThumbnail] for those.
-  Future<List<MediaAsset>> load({MediaFilter filter = const MediaFilter()});
+  /// [onBatch] is invoked as items are discovered so the timeline can fill
+  /// in pieces instead of waiting for the whole library.
+  Future<List<MediaAsset>> load({
+    MediaFilter filter = const MediaFilter(),
+    void Function(List<MediaAsset> batch)? onBatch,
+  });
 
   Future<MediaAsset> ensureThumbnail(MediaAsset asset);
 

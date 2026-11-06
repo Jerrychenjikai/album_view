@@ -36,8 +36,11 @@ class PlatformImageLoader implements ImageLoader {
   Future<String> describeSource() => _library.describeSource();
 
   @override
-  Future<List<MediaAsset>> load({MediaFilter filter = const MediaFilter()}) {
-    return _library.load(filter: filter);
+  Future<List<MediaAsset>> load({
+    MediaFilter filter = const MediaFilter(),
+    void Function(List<MediaAsset> batch)? onBatch,
+  }) {
+    return _library.load(filter: filter, onBatch: onBatch);
   }
 
   @override

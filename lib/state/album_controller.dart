@@ -14,6 +14,8 @@ import '../timeline/timeline_viewport.dart';
 
 enum QuickRange { all, days7, days30, thisYear }
 
+enum IntroPhase { reveal, glide, done }
+
 /// Holds the library, the open time filter, and the infinite-canvas camera.
 class AlbumController extends ChangeNotifier {
   AlbumController(this.loader);
@@ -29,10 +31,14 @@ class AlbumController extends ChangeNotifier {
   final TimelineViewport viewport = TimelineViewport();
 
   bool loading = false;
+  IntroPhase introPhase = IntroPhase.reveal;
+  bool pendingGlide = false;
+  bool _userMoved = false;
   String? error;
   String sourceLabel = '';
-  bool pendingFrame = false;
   double viewWidth = 0;
+  double trackExtent = 0;
+  Timer? _glide;
 
   final Set<String> _thumbInFlight = {};
   final Set<String> _thumbGaveUp = {};
@@ -73,12 +79,27 @@ class AlbumController extends ChangeNotifier {
 
   Future<void> reload() async {
     final ticket = ++_loadTicket;
+    _glide?.cancel();
+    _glide = null;
     loading = true;
+    introPhase = IntroPhase.reveal;
+    pendingGlide = false;
+    _userMoved = false;
     error = null;
+    master = const [];
     _thumbGaveUp.clear();
+    _parkOnToday(force: true);
     notifyListeners();
     try {
-      final assets = await loader.load();
+      final assets = await loader.load(
+        onBatch: (batch) {
+          if (ticket != _loadTicket || batch.isEmpty) return;
+          final next = [...master, ...batch]..sort((a, b) => a.createdAt.compareTo(b.createdAt));
+          master = next;
+          if (!_userMoved && introPhase == IntroPhase.reveal) _parkOnToday(force: true);
+          notifyListeners();
+        },
+      );
       if (ticket != _loadTicket) return;
       master = assets;
       try {
@@ -86,12 +107,20 @@ class AlbumController extends ChangeNotifier {
       } catch (_) {
         sourceLabel = '';
       }
-      pendingFrame = true;
+      if (_userMoved || assets.isEmpty) {
+        introPhase = IntroPhase.done;
+        pendingGlide = false;
+        _settleScroll();
+      } else {
+        pendingGlide = true;
+      }
     } catch (error) {
       if (ticket != _loadTicket) return;
       master = const [];
       this.error = error.toString();
       sourceLabel = '';
+      introPhase = IntroPhase.done;
+      pendingGlide = false;
     } finally {
       if (ticket == _loadTicket) {
         loading = false;
@@ -108,6 +137,7 @@ class AlbumController extends ChangeNotifier {
   void setQuickRange(QuickRange value) {
     if (quickRange == value) return;
     quickRange = value;
+    _takeOver();
     _settleScroll();
     notifyListeners();
   }
@@ -115,12 +145,14 @@ class AlbumController extends ChangeNotifier {
   void setKind(MediaKind? value) {
     if (kind == value) return;
     kind = value;
+    _takeOver();
     _settleScroll();
     notifyListeners();
   }
 
   void panBy(double deltaScreenX, {required double viewWidth}) {
     this.viewWidth = viewWidth;
+    _takeOver();
     viewport.panBy(deltaScreenX);
     _settleScroll();
     notifyListeners();
@@ -132,6 +164,7 @@ class AlbumController extends ChangeNotifier {
     required double viewWidth,
   }) {
     this.viewWidth = viewWidth;
+    _takeOver();
     viewport.zoomAt(
       focalScreenX: focalScreenX,
       factor: factor,
@@ -144,6 +177,7 @@ class AlbumController extends ChangeNotifier {
 
   void ensureScale(double viewWidth) {
     this.viewWidth = viewWidth;
+    if (introPhase != IntroPhase.done) return;
     if (viewWidth <= 0 || viewport.pixelsPerDay <= 0) return;
     final next = TimeScale.clampPixels(
       viewport.pixelsPerDay,
@@ -163,33 +197,24 @@ class AlbumController extends ChangeNotifier {
 
   void frameIfNeeded(double viewWidth, double trackCrossExtent) {
     this.viewWidth = viewWidth;
-    if (loading) {
-      _parkOnToday();
+    trackExtent = trackCrossExtent;
+    if (viewWidth <= 0 || trackCrossExtent <= 0) return;
+    if (pendingGlide) {
+      pendingGlide = false;
+      _startGlide();
       return;
     }
-    if (!pendingFrame || viewWidth <= 0 || trackCrossExtent <= 0) {
-      _settleScroll();
-      return;
-    }
-    pendingFrame = false;
-    final next = TimeScale.clampPixels(
-      viewport.pixelsPerDay,
-      visible.map((asset) => asset.createdAt),
-      viewWidth,
-    );
-    viewport.pixelsPerDay = next;
-    final batches = layout(trackCrossExtent);
-    if (batches.isEmpty) {
+    if (loading || introPhase == IntroPhase.reveal) {
       _parkOnToday(force: true);
-    } else {
-      viewport.scrollX = batches.last.position.dx - viewWidth * 0.62;
-      _settleScroll();
+      return;
     }
-    notifyListeners();
+    if (introPhase == IntroPhase.glide) return;
+    _settleScroll();
   }
 
   void revealToday(double viewWidth) {
     this.viewWidth = viewWidth;
+    _takeOver();
     _parkOnToday(force: true);
     _settleScroll();
     notifyListeners();
@@ -202,6 +227,7 @@ class AlbumController extends ChangeNotifier {
     required double viewWidth,
   }) {
     this.viewWidth = viewWidth;
+    _takeOver();
     final next = TimeScale.clampPixels(
       pixelsPerDay,
       visible.map((asset) => asset.createdAt),
@@ -224,7 +250,8 @@ class AlbumController extends ChangeNotifier {
   }
 
   void _settleScroll() {
-    if (loading || visible.isEmpty) {
+    if (introPhase == IntroPhase.glide) return;
+    if (loading || introPhase == IntroPhase.reveal || visible.isEmpty) {
       _parkOnToday(force: true);
       return;
     }
@@ -324,5 +351,73 @@ class AlbumController extends ChangeNotifier {
     final copy = [...master];
     copy[index] = asset;
     master = copy;
+  }
+
+  void _takeOver() {
+    _userMoved = true;
+    _glide?.cancel();
+    _glide = null;
+    pendingGlide = false;
+    if (introPhase != IntroPhase.done) introPhase = IntroPhase.done;
+  }
+
+  void _startGlide() {
+    _glide?.cancel();
+    final width = viewWidth;
+    final track = trackExtent;
+    if (width <= 0 || track <= 0) {
+      introPhase = IntroPhase.done;
+      notifyListeners();
+      return;
+    }
+    final batches = layout(track);
+    final from = viewport.scrollX;
+    final double target;
+    if (batches.isEmpty) {
+      target = timeDays(DateTime.now()) * viewport.pixelsPerDay - width * 0.5;
+    } else {
+      target = clampTimelineScroll(
+        scrollX: batches.last.position.dx - width * 0.62,
+        pixelsPerDay: viewport.pixelsPerDay,
+        viewWidth: width,
+        dayMarks: visible.map((asset) => timeDays(asset.createdAt.toLocal())),
+        edgePad: TimelineMetrics.footprintWidth / 2,
+      );
+    }
+    final reduce = PlatformDispatcher.instance.accessibilityFeatures.disableAnimations;
+    if (reduce || (target - from).abs() < 1.5) {
+      viewport.scrollX = target;
+      introPhase = IntroPhase.done;
+      notifyListeners();
+      return;
+    }
+    introPhase = IntroPhase.glide;
+    final started = DateTime.now();
+    const ms = 920;
+    _glide = Timer.periodic(const Duration(milliseconds: 16), (timer) {
+      if (introPhase != IntroPhase.glide) {
+        timer.cancel();
+        return;
+      }
+      final raw = (DateTime.now().difference(started).inMilliseconds / ms).clamp(0.0, 1.0);
+      final eased = raw < 0.5 ? 2 * raw * raw : 1 - ((-2 * raw + 2) * (-2 * raw + 2)) / 2;
+      viewport.scrollX = from + (target - from) * eased;
+      if (raw >= 1) {
+        timer.cancel();
+        _glide = null;
+        viewport.scrollX = target;
+        introPhase = IntroPhase.done;
+        _settleScroll();
+      }
+      notifyListeners();
+    });
+    notifyListeners();
+  }
+
+  @override
+  void dispose() {
+    _glide?.cancel();
+    _loadTicket++;
+    super.dispose();
   }
 }

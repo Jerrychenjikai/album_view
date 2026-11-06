@@ -5,6 +5,7 @@ import 'package:album_viewer/loaders/media_probe.dart';
 import 'package:album_viewer/models/media_asset.dart';
 import 'package:album_viewer/models/media_filter.dart';
 import 'package:album_viewer/timeline/day_timeline_layout.dart';
+import 'package:album_viewer/timeline/time_resolution.dart';
 import 'package:album_viewer/timeline/timeline_metrics.dart';
 import 'package:album_viewer/timeline/timeline_viewport.dart';
 
@@ -61,6 +62,68 @@ void main() {
     expect(batches.first.items.map((item) => item.id).toList(), ['1', '2']);
     expect(batches.first.topItem?.id, '2');
     expect(batches.first.position.dx, lessThan(batches.last.position.dx));
+    expect(batches.first.label, '3月2日');
+  });
+
+  test('hour, week and multi-year buckets follow the scale', () {
+    const track = 800.0;
+    final hours = DayTimelineLayout.arrange(
+      assets: [
+        _asset('a', DateTime(2024, 3, 2, 9, 10)),
+        _asset('b', DateTime(2024, 3, 2, 9, 50)),
+        _asset('c', DateTime(2024, 3, 2, 15, 1)),
+      ],
+      trackCrossExtent: track,
+      pixelsPerDay: 4000,
+      topIndex: const {},
+    );
+    expect(hours.map((batch) => batch.id).toList(), ['2024-03-02T09', '2024-03-02T15']);
+    expect(TimeScale.resolutionFor(4000, track).label, '时');
+
+    final weeks = DayTimelineLayout.arrange(
+      assets: [
+        _asset('m', DateTime(2024, 3, 4, 9)),
+        _asset('w', DateTime(2024, 3, 6, 18)),
+        _asset('n', DateTime(2024, 3, 12, 8)),
+      ],
+      trackCrossExtent: track,
+      pixelsPerDay: 10,
+      topIndex: const {},
+    );
+    expect(weeks.length, 2);
+    expect(weeks.first.items.map((item) => item.id).toList(), ['m', 'w']);
+    expect(TimeScale.resolutionFor(10, track).label, '周');
+
+    expect(TimeScale.resolutionFor(0.02, track).label, '9年');
+    final coarse = TimeScale.resolutionFor(0.02, track);
+    final bucket = bucketFor(DateTime(2024, 6, 1), coarse);
+    expect(bucket.id, 'y9:2016');
+    expect(bucket.label, contains('2016'));
+    expect(bucket.label, contains('2024'));
+
+    final threeHours = TimeScale.resolutionFor(800, track);
+    expect(threeHours.label, '3时');
+    final morning = bucketFor(DateTime(2024, 3, 2, 10, 15), threeHours);
+    final lateMorning = bucketFor(DateTime(2024, 3, 2, 11, 40), threeHours);
+    final afternoon = bucketFor(DateTime(2024, 3, 2, 15, 1), threeHours);
+    expect(morning.id, lateMorning.id);
+    expect(morning.id, isNot(afternoon.id));
+
+    final threeDays = TimeScale.resolutionFor(40, track);
+    expect(threeDays.label, '3日');
+    final fortnight = TimeScale.resolutionFor(6.4, track);
+    expect(fortnight.label, '2周');
+    final quarter = TimeScale.resolutionFor(1.2, track);
+    expect(quarter.label, '3月');
+    expect(bucketFor(DateTime(2024, 2, 2), quarter).id, bucketFor(DateTime(2024, 3, 20), quarter).id);
+    expect(bucketFor(DateTime(2024, 2, 2), quarter).id, isNot(bucketFor(DateTime(2024, 5, 1), quarter).id));
+  });
+
+  test('ruler stays sparse when the scale changes', () {
+    final day = rulerFor(pixelsPerDay: 168, startDays: 19800, endDays: 19800 + 1000 / 168);
+    expect(day.ticks.length, inInclusiveRange(4, 40));
+    final year = rulerFor(pixelsPerDay: 0.2, startDays: 19000, endDays: 19000 + 1400 / 0.2);
+    expect(year.ticks.length, inInclusiveRange(2, 40));
   });
 
   test('batches spread across the track and do not overlap at min scale', () {
@@ -86,6 +149,68 @@ void main() {
         expect(overlapsX && overlapsY, isFalse, reason: '${a.id} overlaps ${b.id}');
       }
     }
+  });
+
+  test('a fresh viewport opens on today, not January 1970', () {
+    final viewport = TimelineViewport();
+    final today = timeDays(DateTime.now()) * viewport.pixelsPerDay;
+    expect((viewport.scrollX - today).abs(), lessThan(1));
+    expect(viewport.scrollX, greaterThan(1000));
+  });
+
+  test('scroll stops where no further photo would enter', () {
+    const ppd = 100.0;
+    const width = 500.0;
+    const days = [1000.0, 1010.0];
+    final earliest = clampTimelineScroll(
+      scrollX: -100000,
+      pixelsPerDay: ppd,
+      viewWidth: width,
+      dayMarks: days,
+      edgePad: 50,
+    );
+    final latest = clampTimelineScroll(
+      scrollX: 1000000,
+      pixelsPerDay: ppd,
+      viewWidth: width,
+      dayMarks: days,
+      edgePad: 50,
+    );
+    expect(earliest, closeTo(1000 * ppd - 50 - 32, 0.01));
+    expect(latest, closeTo(1010 * ppd + 50 - width + 32, 0.01));
+    final inside = clampTimelineScroll(
+      scrollX: 1000 * ppd,
+      pixelsPerDay: ppd,
+      viewWidth: width,
+      dayMarks: days,
+      edgePad: 50,
+    );
+    expect(inside, 1000 * ppd);
+  });
+
+  test('a batch shows only the city that appears most often', () {
+    final toronto = const GpsInfo(latitude: 43.6532, longitude: -79.3832);
+    final kingston = const GpsInfo(latitude: 44.2312, longitude: -76.4860);
+    final addressed = const GpsInfo(
+      latitude: 43.65,
+      longitude: -79.38,
+      city: '120 King St, 多伦多, Ontario, Canada',
+    );
+    expect(toronto.cityName, '多伦多');
+    expect(kingston.cityName, '金斯顿');
+    expect(addressed.cityName, '多伦多');
+    expect(addressed.label, '多伦多');
+    final batches = DayTimelineLayout.arrange(
+      assets: [
+        _asset('a', DateTime(2024, 3, 2, 9), gps: toronto),
+        _asset('b', DateTime(2024, 3, 2, 12), gps: toronto),
+        _asset('c', DateTime(2024, 3, 2, 18), gps: kingston),
+      ],
+      trackCrossExtent: 800,
+      pixelsPerDay: 160,
+      topIndex: const {},
+    );
+    expect(batches.single.dominantCity, '多伦多');
   });
 
   test('zoom keeps the day under the cursor fixed', () {

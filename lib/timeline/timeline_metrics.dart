@@ -18,7 +18,7 @@ class TimelineMetrics {
     final slot = footprintHeight + laneGap;
     final lanes = ((trackCrossExtent + laneGap) / slot).floor();
     if (lanes < 1) return 1;
-    if (lanes > 10) return 10;
+    if (lanes > 3) return 3;
     return lanes;
   }
 

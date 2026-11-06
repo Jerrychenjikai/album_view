@@ -6,6 +6,7 @@ import '../loaders/image_loader.dart';
 import '../models/media_asset.dart';
 import '../state/album_controller.dart';
 import '../theme/app_theme.dart';
+import '../timeline/time_resolution.dart';
 import '../timeline/timeline_metrics.dart';
 import 'batch_preview.dart';
 import 'timeline_board.dart';
@@ -96,6 +97,7 @@ class _AlbumHomePageState extends State<AlbumHomePage> {
                         child: BatchPreview(
                           items: controller.previewItems,
                           rows: TimelineMetrics.laneCount(_track),
+                          resolution: controller.resolutionFor(_track),
                           originGlobal: controller.previewOrigin,
                           onClose: controller.closePreview,
                           locateLabel: _onPhone ? '在相册中显示' : '在文件夹中显示',

@@ -17,7 +17,10 @@ import 'media_probe.dart';
 class MobileLibrary {
   const MobileLibrary();
 
-  Future<List<MediaAsset>> load({MediaFilter filter = const MediaFilter()}) async {
+  Future<List<MediaAsset>> load({
+    MediaFilter filter = const MediaFilter(),
+    void Function(List<MediaAsset> batch)? onBatch,
+  }) async {
     final permission = await PhotoManager.requestPermissionExtend();
     if (!_hasAccess(permission)) {
       throw const LibraryException('没有相册访问权限。请在系统设置中允许后点重新读取。');
@@ -49,11 +52,15 @@ class MobileLibrary {
     while (true) {
       final chunk = await album.getAssetListPaged(page: page, size: pageSize);
       if (chunk.isEmpty) break;
+      final pageItems = <MediaAsset>[];
       for (final entity in chunk) {
         if (entity.type != AssetType.image && entity.type != AssetType.video) continue;
         final asset = _fromEntity(entity, album.name);
-        if (filter.accepts(asset)) assets.add(asset);
+        if (!filter.accepts(asset)) continue;
+        assets.add(asset);
+        pageItems.add(asset);
       }
+      if (pageItems.isNotEmpty) onBatch?.call(List<MediaAsset>.from(pageItems));
       if (chunk.length < pageSize) break;
       page++;
     }
