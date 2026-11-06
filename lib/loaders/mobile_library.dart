@@ -20,6 +20,7 @@ class MobileLibrary {
   Future<List<MediaAsset>> load({
     MediaFilter filter = const MediaFilter(),
     void Function(List<MediaAsset> batch)? onBatch,
+    void Function(LoadProgress progress)? onProgress,
   }) async {
     final permission = await PhotoManager.requestPermissionExtend();
     if (!_hasAccess(permission)) {
@@ -46,6 +47,13 @@ class MobileLibrary {
     if (albums.isEmpty) return const [];
 
     final album = albums.first;
+    var total = 0;
+    try {
+      total = await album.assetCountAsync;
+    } catch (_) {
+      total = 0;
+    }
+    onProgress?.call(LoadProgress(done: 0, total: total));
     final assets = <MediaAsset>[];
     const pageSize = 80;
     var page = 0;
@@ -61,6 +69,7 @@ class MobileLibrary {
         pageItems.add(asset);
       }
       if (pageItems.isNotEmpty) onBatch?.call(List<MediaAsset>.from(pageItems));
+      onProgress?.call(LoadProgress(done: assets.length, total: total));
       if (chunk.length < pageSize) break;
       page++;
     }

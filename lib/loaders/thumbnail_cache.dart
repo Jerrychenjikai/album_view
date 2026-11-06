@@ -1,7 +1,6 @@
 import 'dart:io';
 import 'dart:typed_data';
 
-import 'package:image/image.dart' as img;
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
@@ -45,24 +44,5 @@ class ThumbnailCache {
     final file = await fileFor(assetId);
     await file.writeAsBytes(jpeg, flush: true);
     return file.path;
-  }
-}
-
-/// Isolate entry. Must stay a top-level function.
-Uint8List? encodeThumbnailIsolate(Uint8List bytes) {
-  try {
-    final decoded = img.decodeImage(bytes);
-    if (decoded == null) return null;
-    final img.Image sized;
-    if (decoded.width <= 520 && decoded.height <= 520) {
-      sized = decoded;
-    } else if (decoded.width >= decoded.height) {
-      sized = img.copyResize(decoded, width: 480, interpolation: img.Interpolation.linear);
-    } else {
-      sized = img.copyResize(decoded, height: 480, interpolation: img.Interpolation.linear);
-    }
-    return Uint8List.fromList(img.encodeJpg(sized, quality: 72));
-  } catch (_) {
-    return null;
   }
 }

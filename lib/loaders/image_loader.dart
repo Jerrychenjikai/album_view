@@ -1,6 +1,25 @@
 import '../models/media_asset.dart';
 import '../models/media_filter.dart';
 
+/// How far a folder or album scan has got.
+///
+/// [total] is 0 while the size is still unknown. [counting] means the loader
+/// is only listing files and has not started reading them yet.
+class LoadProgress {
+  final int done;
+  final int total;
+  final bool counting;
+
+  const LoadProgress({required this.done, required this.total, this.counting = false});
+
+  double? get fraction {
+    if (counting || total <= 0) return null;
+    final value = done / total;
+    if (value.isNaN) return null;
+    return value.clamp(0.0, 1.0);
+  }
+}
+
 /// The contract implemented by every `{platform}_image_loader.dart`.
 ///
 /// Switch platforms by replacing the import in `lib/main.dart`. The class
@@ -23,9 +42,12 @@ abstract interface class ImageLoader {
   /// Thumbnails may still be empty; call [ensureThumbnail] for those.
   /// [onBatch] is invoked as items are discovered so the timeline can fill
   /// in pieces instead of waiting for the whole library.
+  /// [onProgress] reports the scan so the toolbar can show when batches
+  /// will become openable.
   Future<List<MediaAsset>> load({
     MediaFilter filter = const MediaFilter(),
     void Function(List<MediaAsset> batch)? onBatch,
+    void Function(LoadProgress progress)? onProgress,
   });
 
   Future<MediaAsset> ensureThumbnail(MediaAsset asset);

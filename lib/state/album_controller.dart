@@ -34,6 +34,9 @@ class AlbumController extends ChangeNotifier {
   IntroPhase introPhase = IntroPhase.reveal;
   bool pendingGlide = false;
   bool _userMoved = false;
+  int scanDone = 0;
+  int scanTotal = 0;
+  bool scanCounting = false;
   String? error;
   String sourceLabel = '';
   double viewWidth = 0;
@@ -42,7 +45,30 @@ class AlbumController extends ChangeNotifier {
 
   final Set<String> _thumbInFlight = {};
   final Set<String> _thumbGaveUp = {};
+  final List<MediaAsset> _thumbQueue = [];
+  int _thumbWorkers = 0;
   int _loadTicket = 0;
+  DateTime _lastProgressNote = DateTime.fromMillisecondsSinceEpoch(0);
+
+  /// Batches stay closed until the folder walk finishes.
+  bool get canOpenBatches => !loading;
+
+  String get scanLabel {
+    if (!loading) return '';
+    if (scanCounting) {
+      return scanDone <= 0 ? '正在清点文件夹' : '正在清点 · 已看到 $scanDone 个文件';
+    }
+    if (scanTotal <= 0) {
+      return scanDone <= 0 ? '正在读取' : '正在读取 · 已找到 $scanDone';
+    }
+    return '正在读取 $scanDone/$scanTotal · 读完后可以点开';
+  }
+
+  /// Null while the total is still unknown, so the bar stays indeterminate.
+  double? get scanFraction {
+    if (!loading || scanCounting || scanTotal <= 0) return null;
+    return (scanDone / scanTotal).clamp(0.0, 1.0);
+  }
 
   MediaFilter get filter {
     final now = DateTime.now();
@@ -85,18 +111,33 @@ class AlbumController extends ChangeNotifier {
     introPhase = IntroPhase.reveal;
     pendingGlide = false;
     _userMoved = false;
+    scanDone = 0;
+    scanTotal = 0;
+    scanCounting = true;
     error = null;
     master = const [];
     _thumbGaveUp.clear();
+    _thumbQueue.clear();
+    _thumbInFlight.clear();
     _parkOnToday(force: true);
     notifyListeners();
     try {
       final assets = await loader.load(
         onBatch: (batch) {
           if (ticket != _loadTicket || batch.isEmpty) return;
-          final next = [...master, ...batch]..sort((a, b) => a.createdAt.compareTo(b.createdAt));
-          master = next;
+          master = [...master, ...batch];
           if (!_userMoved && introPhase == IntroPhase.reveal) _parkOnToday(force: true);
+          notifyListeners();
+        },
+        onProgress: (progress) {
+          if (ticket != _loadTicket) return;
+          scanDone = progress.done;
+          scanTotal = progress.total;
+          scanCounting = progress.counting;
+          final now = DateTime.now();
+          final last = progress.total > 0 && progress.done >= progress.total;
+          if (!last && now.difference(_lastProgressNote).inMilliseconds < 120) return;
+          _lastProgressNote = now;
           notifyListeners();
         },
       );
@@ -152,7 +193,7 @@ class AlbumController extends ChangeNotifier {
 
   void panBy(double deltaScreenX, {required double viewWidth}) {
     this.viewWidth = viewWidth;
-    _takeOver();
+    _browse();
     viewport.panBy(deltaScreenX);
     _settleScroll();
     notifyListeners();
@@ -164,7 +205,7 @@ class AlbumController extends ChangeNotifier {
     required double viewWidth,
   }) {
     this.viewWidth = viewWidth;
-    _takeOver();
+    _browse();
     viewport.zoomAt(
       focalScreenX: focalScreenX,
       factor: factor,
@@ -199,16 +240,17 @@ class AlbumController extends ChangeNotifier {
     this.viewWidth = viewWidth;
     trackExtent = trackCrossExtent;
     if (viewWidth <= 0 || trackCrossExtent <= 0) return;
-    if (pendingGlide) {
+    if (pendingGlide && !_userMoved) {
       pendingGlide = false;
       _startGlide();
       return;
     }
-    if (loading || introPhase == IntroPhase.reveal) {
+    if (introPhase == IntroPhase.glide) return;
+    if (!_userMoved && (loading || introPhase == IntroPhase.reveal)) {
       _parkOnToday(force: true);
       return;
     }
-    if (introPhase == IntroPhase.glide) return;
+    if (loading && visible.isEmpty) return;
     _settleScroll();
   }
 
@@ -227,7 +269,7 @@ class AlbumController extends ChangeNotifier {
     required double viewWidth,
   }) {
     this.viewWidth = viewWidth;
-    _takeOver();
+    _browse();
     final next = TimeScale.clampPixels(
       pixelsPerDay,
       visible.map((asset) => asset.createdAt),
@@ -251,11 +293,11 @@ class AlbumController extends ChangeNotifier {
 
   void _settleScroll() {
     if (introPhase == IntroPhase.glide) return;
-    if (loading || introPhase == IntroPhase.reveal || visible.isEmpty) {
+    if (!_userMoved && (loading || introPhase == IntroPhase.reveal || visible.isEmpty)) {
       _parkOnToday(force: true);
       return;
     }
-    if (viewWidth <= 0) return;
+    if (visible.isEmpty || viewWidth <= 0) return;
     final next = clampTimelineScroll(
       scrollX: viewport.scrollX,
       pixelsPerDay: viewport.pixelsPerDay,
@@ -275,14 +317,12 @@ class AlbumController extends ChangeNotifier {
   Offset? previewOrigin;
 
   void openBatch(MediaBatch batch, {Offset? origin}) {
-    if (batch.items.isEmpty) return;
+    if (loading || batch.items.isEmpty) return;
     previewIds = [for (final item in batch.items) item.id];
     selectedBatchId = batch.id;
     previewOrigin = origin;
     notifyListeners();
-    for (final item in batch.items) {
-      unawaited(_hydrate(item));
-    }
+    _enqueueThumbs(batch.items, front: true);
   }
 
   void closePreview() {
@@ -302,23 +342,57 @@ class AlbumController extends ChangeNotifier {
   void selectBatch(MediaBatch batch) => openBatch(batch);
 
   void pumpThumbnails(List<MediaBatch> onScreen) {
-    final queue = <MediaAsset>[];
+    final tops = <MediaAsset>[];
     for (final batch in onScreen) {
       final top = batch.topItem;
-      if (top == null || top.hasThumbnail) continue;
-      if (_thumbInFlight.contains(top.id) || _thumbGaveUp.contains(top.id)) continue;
-      queue.add(top);
-      if (queue.length >= 3) break;
+      if (top == null) continue;
+      tops.add(top);
+      if (tops.length >= 3) break;
     }
-    for (final asset in queue) {
+    if (tops.isEmpty) return;
+    _enqueueThumbs(tops, front: false);
+  }
+
+  void _enqueueThumbs(List<MediaAsset> items, {required bool front}) {
+    final order = front ? items.reversed : items;
+    for (final item in order) {
+      if (item.hasThumbnail || _thumbGaveUp.contains(item.id) || _thumbInFlight.contains(item.id)) continue;
+      final existing = _thumbQueue.indexWhere((queued) => queued.id == item.id);
+      if (existing >= 0) {
+        if (!front || existing == 0) continue;
+        final queued = _thumbQueue.removeAt(existing);
+        _thumbQueue.insert(0, queued);
+        continue;
+      }
+      if (front) {
+        _thumbQueue.insert(0, item);
+      } else {
+        _thumbQueue.add(item);
+      }
+    }
+    _drainThumbs();
+  }
+
+  void _drainThumbs() {
+    final ticket = _loadTicket;
+    while (_thumbWorkers < 2 && _thumbQueue.isNotEmpty) {
+      final asset = _thumbQueue.removeAt(0);
+      if (asset.hasThumbnail || _thumbGaveUp.contains(asset.id) || _thumbInFlight.contains(asset.id)) continue;
       _thumbInFlight.add(asset.id);
-      unawaited(_loadThumb(asset));
+      _thumbWorkers++;
+      unawaited(_runThumb(asset, ticket));
     }
   }
 
-  Future<void> _loadThumb(MediaAsset asset) async {
+  Future<void> _runThumb(MediaAsset asset, int ticket) async {
     try {
-      final updated = await loader.ensureThumbnail(asset);
+      final current = _current(asset);
+      var updated = await loader.ensureThumbnail(current);
+      if (ticket != _loadTicket) return;
+      try {
+        updated = await loader.ensureDetails(updated);
+      } catch (_) {}
+      if (ticket != _loadTicket) return;
       if (!updated.hasThumbnail) {
         _thumbGaveUp.add(asset.id);
       } else {
@@ -326,23 +400,17 @@ class AlbumController extends ChangeNotifier {
         notifyListeners();
       }
     } catch (_) {
-      // A missing preview should not take down the table.
+      if (ticket == _loadTicket) _thumbGaveUp.add(asset.id);
     } finally {
-      _thumbInFlight.remove(asset.id);
+      _thumbWorkers--;
+      if (ticket == _loadTicket) _thumbInFlight.remove(asset.id);
+      if (ticket == _loadTicket) _drainThumbs();
     }
   }
 
-  Future<void> _hydrate(MediaAsset asset) async {
-    try {
-      var next = asset;
-      if (!next.hasThumbnail) {
-        next = await loader.ensureThumbnail(next);
-        _replace(next);
-      }
-      next = await loader.ensureDetails(next);
-      _replace(next);
-      notifyListeners();
-    } catch (_) {}
+  MediaAsset _current(MediaAsset asset) {
+    final index = master.indexWhere((item) => item.id == asset.id);
+    return index < 0 ? asset : master[index];
   }
 
   void _replace(MediaAsset asset) {
@@ -351,6 +419,15 @@ class AlbumController extends ChangeNotifier {
     final copy = [...master];
     copy[index] = asset;
     master = copy;
+  }
+
+  /// The person took the camera. Keep their place; do not glide back later.
+  void _browse() {
+    _userMoved = true;
+    _glide?.cancel();
+    _glide = null;
+    pendingGlide = false;
+    if (introPhase == IntroPhase.glide) introPhase = IntroPhase.done;
   }
 
   void _takeOver() {

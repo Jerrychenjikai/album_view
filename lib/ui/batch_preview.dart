@@ -931,11 +931,17 @@ class _Still extends StatelessWidget {
   Widget build(BuildContext context) {
     final bytes = asset.thumbnailBytes;
     if (bytes != null && bytes.isNotEmpty) {
-      return Image.memory(bytes, fit: fit, gaplessPlayback: true);
+      return Image.memory(bytes, fit: fit, gaplessPlayback: true, filterQuality: FilterQuality.low);
     }
     final path = asset.thumbnailPath;
     if (path != null && path.isNotEmpty) {
-      return Image.file(File(path), fit: fit, gaplessPlayback: true);
+      return Image.file(
+        File(path),
+        fit: fit,
+        cacheWidth: 480,
+        gaplessPlayback: true,
+        filterQuality: FilterQuality.low,
+      );
     }
     final hue = (unitHash(asset.id) * 40 + 18);
     final wash = HSLColor.fromAHSL(1, hue, 0.28, 0.42).toColor();

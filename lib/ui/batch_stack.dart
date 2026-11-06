@@ -165,8 +165,9 @@ class _Preview extends StatelessWidget {
       image = Image.file(
         File(asset.thumbnailPath!),
         fit: BoxFit.cover,
+        cacheWidth: 360,
         gaplessPlayback: true,
-        filterQuality: FilterQuality.medium,
+        filterQuality: FilterQuality.low,
       );
     } else {
       image = _Fallback(asset: asset);

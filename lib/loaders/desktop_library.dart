@@ -1,7 +1,6 @@
 import 'dart:io';
 import 'dart:typed_data';
 
-import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -9,7 +8,9 @@ import '../models/media_asset.dart';
 import '../models/media_filter.dart';
 import 'image_loader.dart';
 import 'media_probe.dart';
+import 'still_thumb.dart';
 import 'thumbnail_cache.dart';
+import 'windows_thumb.dart';
 
 /// Shared folder scanner for macOS and Windows.
 ///
@@ -54,6 +55,7 @@ class DesktopLibrary {
   Future<List<MediaAsset>> load({
     MediaFilter filter = const MediaFilter(),
     void Function(List<MediaAsset> batch)? onBatch,
+    void Function(LoadProgress progress)? onProgress,
   }) async {
     final root = await resolveRoot();
     if (!await root.exists()) {
@@ -63,29 +65,36 @@ class DesktopLibrary {
       );
     }
 
+    final files = <File>[];
+    await _collect(root, files, (seen) {
+      onProgress?.call(LoadProgress(done: seen, total: 0, counting: true));
+    });
+    final total = files.length;
+    onProgress?.call(LoadProgress(done: 0, total: total));
+
     final found = <MediaAsset>[];
     final pending = <MediaAsset>[];
-    void take(MediaAsset asset) {
-      found.add(asset);
-      pending.add(asset);
-      if (pending.length >= 24) {
-        onBatch?.call(List<MediaAsset>.from(pending));
-        pending.clear();
+    for (var index = 0; index < files.length; index++) {
+      final asset = await _assetFromFile(files[index]);
+      if (asset != null && filter.accepts(asset)) {
+        found.add(asset);
+        pending.add(asset);
+        if (pending.length >= 24) {
+          onBatch?.call(List<MediaAsset>.from(pending));
+          pending.clear();
+        }
+      }
+      if (index % 6 == 0 || index == files.length - 1) {
+        onProgress?.call(LoadProgress(done: index + 1, total: total));
       }
     }
-
-    await _walk(root, root, take, filter);
     if (pending.isNotEmpty) onBatch?.call(List<MediaAsset>.from(pending));
     found.sort((a, b) => a.createdAt.compareTo(b.createdAt));
+    onProgress?.call(LoadProgress(done: total, total: total));
     return found;
   }
 
-  Future<void> _walk(
-    Directory directory,
-    Directory root,
-    void Function(MediaAsset asset) take,
-    MediaFilter filter,
-  ) async {
+  Future<void> _collect(Directory directory, List<File> files, void Function(int seen) onSeen) async {
     final List<FileSystemEntity> children;
     try {
       children = await directory.list(followLinks: false).toList();
@@ -95,12 +104,16 @@ class DesktopLibrary {
     for (final entity in children) {
       if (entity is Directory) {
         if (_skipDirectory(p.basename(entity.path))) continue;
-        await _walk(entity, root, take, filter);
+        await _collect(entity, files, onSeen);
       } else if (entity is File) {
-        final asset = await _assetFromFile(entity);
-        if (asset == null) continue;
-        if (!filter.accepts(asset)) continue;
-        take(asset);
+        final name = p.basename(entity.path);
+        if (name.startsWith('.')) continue;
+        if (kindForExtension(p.extension(entity.path)) == null) continue;
+        files.add(entity);
+        if (files.length % 48 == 0) {
+          onSeen(files.length);
+          await Future<void>.delayed(Duration.zero);
+        }
       }
     }
   }
@@ -164,7 +177,6 @@ class DesktopLibrary {
   }
 
   Future<MediaAsset> ensureThumbnail(MediaAsset asset) async {
-    if (asset.kind != MediaKind.image) return asset;
     if (asset.thumbnailBytes != null && asset.thumbnailBytes!.isNotEmpty) return asset;
     final cached = asset.thumbnailPath ?? await ThumbnailCache.existingPath(asset.id);
     if (cached != null && await File(cached).exists()) {
@@ -173,14 +185,25 @@ class DesktopLibrary {
 
     final file = File(asset.filePath);
     if (!await file.exists()) return asset;
-    final length = await file.length();
-    // Full decode of very large originals is not worth a hitch. Metadata still shows.
-    if (length <= 0 || length > 18 * 1024 * 1024) return asset;
-    final bytes = await file.readAsBytes();
-    final jpeg = await compute(encodeThumbnailIsolate, bytes);
+
+    Uint8List? jpeg;
+    if (asset.kind == MediaKind.image) {
+      jpeg = await stillThumbnail(file.path);
+    }
+    // Windows has no frame grabber of its own here. The shell thumbnail is
+    // what Explorer shows for mp4/mov, and it also covers HEIC the engine
+    // cannot decode. It runs off the UI isolate.
+    if ((jpeg == null || jpeg.isEmpty) && Platform.isWindows) {
+      jpeg = await windowsFileThumbnail(file.path);
+    }
     if (jpeg == null || jpeg.isEmpty) return asset;
     final path = await ThumbnailCache.write(asset.id, jpeg);
-    return asset.copyWith(thumbnailBytes: jpeg, thumbnailPath: path);
+    return asset.copyWith(
+      thumbnailBytes: null,
+      writeThumbnailBytes: true,
+      thumbnailPath: path,
+      writeThumbnailPath: true,
+    );
   }
 
   Future<MediaAsset> ensureDetails(MediaAsset asset) async => asset;

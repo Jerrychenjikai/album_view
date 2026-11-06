@@ -224,6 +224,31 @@ class _Toolbar extends StatelessWidget {
                 _IconButton(tooltip: '照片文件夹', label: '来源', onPressed: onFolder),
             ],
           ),
+          if (controller.loading)
+            Padding(
+              padding: const EdgeInsets.only(top: 8, right: 8),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(99),
+                    child: LinearProgressIndicator(
+                      value: controller.scanFraction,
+                      minHeight: 4,
+                      color: DeskColors.amber,
+                      backgroundColor: DeskColors.line,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    controller.scanLabel,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(color: DeskColors.muted, fontSize: 12),
+                  ),
+                ],
+              ),
+            ),
           if (controller.error != null)
             Padding(
               padding: const EdgeInsets.only(top: 4, right: 8),
