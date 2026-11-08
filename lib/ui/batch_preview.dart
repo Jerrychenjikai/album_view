@@ -21,6 +21,7 @@ class BatchPreview extends StatefulWidget {
   final Future<void> Function(MediaAsset asset)? onReveal;
   final String locateLabel;
   final VoidCallback onClose;
+  final void Function(List<MediaAsset> page)? onFocusPage;
 
   const BatchPreview({
     super.key,
@@ -32,6 +33,7 @@ class BatchPreview extends StatefulWidget {
     this.resolveOriginal,
     this.onReveal,
     this.locateLabel = '在文件夹中显示',
+    this.onFocusPage,
   });
 
   @override
@@ -44,6 +46,9 @@ class _BatchPreviewState extends State<BatchPreview> with TickerProviderStateMix
   final Map<int, Offset> _pointers = {};
   final Set<String> _flipped = {};
   final GlobalKey _barKey = GlobalKey();
+  final ScrollController _sliceScroll = ScrollController();
+  bool _revealedNewestSlice = false;
+  String? _announcedPage;
 
   double _travel = 0;
   bool _dragged = false;
@@ -84,12 +89,15 @@ class _BatchPreviewState extends State<BatchPreview> with TickerProviderStateMix
       } else {
         _spread.forward();
       }
+      _announcePage(_slices);
+      _revealNewestSlice();
     });
   }
 
   @override
   void dispose() {
     _hold?.cancel();
+    _sliceScroll.dispose();
     _spread.dispose();
     _pop.dispose();
     super.dispose();
@@ -200,10 +208,50 @@ class _BatchPreviewState extends State<BatchPreview> with TickerProviderStateMix
 
   List<MediaAsset> _pageOf(List<PreviewSlice> slices) {
     if (slices.isEmpty) return widget.items;
+    final id = _activeId(slices);
     for (final slice in slices) {
-      if (slice.id == _sliceId) return slice.items;
+      if (slice.id == id) return slice.items;
     }
     return slices.last.items;
+  }
+
+  /// Slices run oldest to newest. A large batch opens on the newest page,
+  /// which is also the page whose thumbnails are decoded first.
+  String _activeId(List<PreviewSlice> slices) {
+    if (slices.isEmpty) return '';
+    if (_sliceId != null && slices.any((slice) => slice.id == _sliceId)) return _sliceId!;
+    return slices.last.id;
+  }
+
+  void _announcePage(List<PreviewSlice> slices) {
+    final page = _pageOf(slices);
+    final id = slices.isEmpty ? '' : _activeId(slices);
+    if (_announcedPage == id) return;
+    _announcedPage = id;
+    widget.onFocusPage?.call(page);
+  }
+
+  int _sliceRevealTries = 0;
+
+  void _revealNewestSlice() {
+    if (_revealedNewestSlice || !mounted) return;
+    if (_sliceRevealTries >= 8) {
+      _revealedNewestSlice = true;
+      return;
+    }
+    _sliceRevealTries++;
+    if (!_sliceScroll.hasClients) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _revealNewestSlice());
+      return;
+    }
+    final position = _sliceScroll.position;
+    final target = position.maxScrollExtent;
+    if (target > position.pixels + 1) {
+      position.jumpTo(target);
+      WidgetsBinding.instance.addPostFrameCallback((_) => _revealNewestSlice());
+      return;
+    }
+    _revealedNewestSlice = true;
   }
 
   void _cancelHold() {
@@ -286,11 +334,7 @@ class _BatchPreviewState extends State<BatchPreview> with TickerProviderStateMix
     final rows = math.max(1, widget.rows);
     final slices = _slices;
     final page = _pageOf(slices);
-    final activeId = slices.isEmpty
-        ? ''
-        : slices.any((slice) => slice.id == _sliceId)
-            ? _sliceId
-            : slices.last.id;
+    final activeId = _activeId(slices);
     final showBar = slices.length > 1;
     final popping = _zoomId != null && _pop.value > 0.01;
     final blur = 8 * Curves.easeOutCubic.transform(_pop.value.clamp(0.0, 1.0));
@@ -363,6 +407,7 @@ class _BatchPreviewState extends State<BatchPreview> with TickerProviderStateMix
                         child: IgnorePointer(
                           ignoring: _zoomId != null,
                           child: ListView.separated(
+                            controller: _sliceScroll,
                             scrollDirection: Axis.horizontal,
                             padding: const EdgeInsets.symmetric(horizontal: 12),
                             itemCount: slices.length,
@@ -376,6 +421,7 @@ class _BatchPreviewState extends State<BatchPreview> with TickerProviderStateMix
                                     _sliceId = slice.id;
                                     _offset = 0;
                                   });
+                                  _announcePage(slices);
                                 },
                                 child: Container(
                                   alignment: Alignment.center,

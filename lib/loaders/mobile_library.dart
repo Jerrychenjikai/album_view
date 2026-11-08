@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:android_intent_plus/android_intent.dart';
 import 'package:photo_manager/photo_manager.dart';
@@ -8,6 +9,7 @@ import '../models/media_asset.dart';
 import '../models/media_filter.dart';
 import 'image_loader.dart';
 import 'media_probe.dart';
+import 'thumbnail_cache.dart';
 
 /// System photo library reader shared by the iOS and Android loaders.
 ///
@@ -155,15 +157,38 @@ class MobileLibrary {
   }
 
   Future<MediaAsset> ensureThumbnail(MediaAsset asset) async {
-    if (asset.thumbnailBytes != null && asset.thumbnailBytes!.isNotEmpty) return asset;
-    final entity = await AssetEntity.fromId(asset.id);
-    if (entity == null) return asset;
-    final bytes = await entity.thumbnailDataWithSize(
-      const ThumbnailSize(480, 480),
-      quality: 72,
-    );
+    final known = asset.thumbnailPath;
+    if (known != null && known.isNotEmpty && await File(known).exists() && await File(known).length() > 0) {
+      if (asset.thumbnailBytes == null || asset.thumbnailBytes!.isEmpty) return asset;
+      return asset.copyWith(thumbnailBytes: null, writeThumbnailBytes: true);
+    }
+    final cached = await ThumbnailCache.existingPath(asset.id);
+    if (cached != null) {
+      return asset.copyWith(
+        thumbnailBytes: null,
+        writeThumbnailBytes: true,
+        thumbnailPath: cached,
+        writeThumbnailPath: true,
+      );
+    }
+    final pending = asset.thumbnailBytes;
+    Uint8List? bytes = pending != null && pending.isNotEmpty ? pending : null;
+    if (bytes == null) {
+      final entity = await AssetEntity.fromId(asset.id);
+      if (entity == null) return asset;
+      bytes = await entity.thumbnailDataWithSize(
+        const ThumbnailSize(480, 480),
+        quality: 72,
+      );
+    }
     if (bytes == null || bytes.isEmpty) return asset;
-    return asset.copyWith(thumbnailBytes: bytes);
+    final path = await ThumbnailCache.write(asset.id, bytes);
+    return asset.copyWith(
+      thumbnailBytes: null,
+      writeThumbnailBytes: true,
+      thumbnailPath: path,
+      writeThumbnailPath: true,
+    );
   }
 
   Future<MediaAsset> ensureDetails(MediaAsset asset) async {

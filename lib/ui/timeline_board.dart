@@ -17,6 +17,8 @@ class TimelineBoard extends StatefulWidget {
   final double trackHeight;
   final double viewWidth;
   final List<MediaBatch> batches;
+  final bool shareArmed;
+  final void Function(MediaBatch batch)? onShareBatch;
 
   const TimelineBoard({
     super.key,
@@ -24,6 +26,8 @@ class TimelineBoard extends StatefulWidget {
     required this.trackHeight,
     required this.viewWidth,
     required this.batches,
+    this.shareArmed = false,
+    this.onShareBatch,
   });
 
   @override
@@ -366,6 +370,10 @@ class _TimelineBoardState extends State<TimelineBoard> with SingleTickerProvider
 
   void _handleTap(MediaBatch batch) {
     if (_dragged || _flight != null || _zoomHold || widget.controller.zooming) return;
+    if (widget.shareArmed) {
+      widget.onShareBatch?.call(batch);
+      return;
+    }
     final box = context.findRenderObject() as RenderBox?;
     Offset? origin;
     if (box != null && box.hasSize) {

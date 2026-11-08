@@ -364,7 +364,16 @@ class AlbumController extends ChangeNotifier {
     selectedBatchId = batch.id;
     previewOrigin = origin;
     notifyListeners();
-    _enqueueThumbs(batch.items, front: true);
+    final slices = previewSlices(batch.items, resolutionFor(trackExtent));
+    final page = slices.isEmpty ? batch.items : slices.last.items;
+    _enqueueThumbs(page, front: true);
+  }
+
+  /// Jump the given photos to the front of the thumbnail queue, in order.
+  /// The open preview uses this so the page on screen is decoded first.
+  void prioritizeThumbs(List<MediaAsset> items) {
+    if (items.isEmpty) return;
+    _enqueueThumbs(items, front: true);
   }
 
   void closePreview() {
@@ -395,22 +404,23 @@ class AlbumController extends ChangeNotifier {
     _enqueueThumbs(tops, front: false);
   }
 
+  /// [front] keeps [items] in the order given and puts that run ahead of
+  /// whatever was already waiting. The first item is decoded first.
   void _enqueueThumbs(List<MediaAsset> items, {required bool front}) {
-    final order = front ? items.reversed : items;
-    for (final item in order) {
+    final incoming = <MediaAsset>[];
+    for (final item in items) {
       if (item.hasThumbnail || _thumbGaveUp.contains(item.id) || _thumbInFlight.contains(item.id)) continue;
       final existing = _thumbQueue.indexWhere((queued) => queued.id == item.id);
       if (existing >= 0) {
-        if (!front || existing == 0) continue;
-        final queued = _thumbQueue.removeAt(existing);
-        _thumbQueue.insert(0, queued);
-        continue;
+        if (!front) continue;
+        _thumbQueue.removeAt(existing);
       }
-      if (front) {
-        _thumbQueue.insert(0, item);
-      } else {
-        _thumbQueue.add(item);
-      }
+      incoming.add(item);
+    }
+    if (front) {
+      _thumbQueue.insertAll(0, incoming);
+    } else {
+      _thumbQueue.addAll(incoming);
     }
     _drainThumbs();
   }

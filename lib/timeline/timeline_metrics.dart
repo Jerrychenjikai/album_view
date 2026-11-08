@@ -9,6 +9,11 @@ class TimelineMetrics {
   static const double rotationLimit = 0.04;
   static const double rulerHeight = 52;
 
+  /// How far the camera may travel past the first and last print.
+  /// Half a card left the edge stack against the screen, where the
+  /// fan and shadow were sometimes clipped.
+  static const double scrollInset = 120;
+
   static double get footprintWidth => cardWidth + fan * 2;
   static double get footprintHeight => cardHeight + fan;
 

@@ -6,11 +6,13 @@ import 'package:flutter/services.dart';
 import '../loaders/image_loader.dart';
 import '../models/media_asset.dart';
 import '../models/media_batch.dart';
+import '../share/share_card.dart';
 import '../state/album_controller.dart';
 import '../theme/app_theme.dart';
 import '../timeline/time_resolution.dart';
 import '../timeline/timeline_metrics.dart';
 import 'batch_preview.dart';
+import 'share_sheet.dart';
 import 'timeline_board.dart';
 
 class AlbumHomePage extends StatefulWidget {
@@ -29,6 +31,8 @@ class _AlbumHomePageState extends State<AlbumHomePage> {
   (int, QuickRange, MediaKind?, double, double)? _layoutKey;
 
   bool _picking = false;
+  bool _shareArmed = false;
+  MediaBatch? _shareBatch;
 
   @override
   void initState() {
@@ -98,6 +102,8 @@ class _AlbumHomePageState extends State<AlbumHomePage> {
                           track: _track,
                           onZoom: _zoom,
                           onFolder: _editFolder,
+                          shareArmed: _shareArmed,
+                          onShare: _onPhone ? _toggleShare : null,
                         ),
                         Expanded(
                           child: LayoutBuilder(
@@ -116,6 +122,8 @@ class _AlbumHomePageState extends State<AlbumHomePage> {
                                 trackHeight: track,
                                 viewWidth: boardConstraints.maxWidth,
                                 batches: batches,
+                                shareArmed: _shareArmed,
+                                onShareBatch: _tryShare,
                               );
                             },
                           ),
@@ -133,6 +141,15 @@ class _AlbumHomePageState extends State<AlbumHomePage> {
                           locateLabel: _onPhone ? '在相册中显示' : '在文件夹中显示',
                           resolveOriginal: controller.loader.materializeOriginal,
                           onReveal: _revealAsset,
+                          onFocusPage: controller.prioritizeThumbs,
+                        ),
+                      ),
+                    if (_shareBatch != null)
+                      Positioned.fill(
+                        child: ShareSheet(
+                          items: _shareBatch!.items,
+                          resolveOriginal: controller.loader.materializeOriginal,
+                          onClose: () => setState(() => _shareBatch = null),
                         ),
                       ),
                   ],
@@ -159,6 +176,31 @@ class _AlbumHomePageState extends State<AlbumHomePage> {
   void _zoom(double factor) {
     final width = MediaQuery.sizeOf(context).width;
     controller.zoomAt(focalScreenX: width / 2, factor: factor, viewWidth: width);
+  }
+
+  void _toggleShare() {
+    setState(() {
+      _shareArmed = !_shareArmed;
+      if (!_shareArmed) _shareBatch = null;
+    });
+  }
+
+  void _tryShare(MediaBatch batch) {
+    if (batch.items.length > sharePhotoLimit) {
+      _toast('这一摞超过 100 张。请放大时间轴之后再点选。');
+      return;
+    }
+    if (!batch.items.any((item) => item.kind == MediaKind.image)) {
+      _toast('这一摞里没有可以分享的照片。');
+      return;
+    }
+    setState(() => _shareBatch = batch);
+  }
+
+  void _toast(String text) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(behavior: SnackBarBehavior.floating, content: Text(text)),
+    );
   }
 
   Future<void> _bootMac() async {
@@ -260,12 +302,16 @@ class _Toolbar extends StatelessWidget {
   final double track;
   final void Function(double factor) onZoom;
   final VoidCallback onFolder;
+  final bool shareArmed;
+  final VoidCallback? onShare;
 
   const _Toolbar({
     required this.controller,
     required this.track,
     required this.onZoom,
     required this.onFolder,
+    required this.shareArmed,
+    required this.onShare,
   });
 
   @override
@@ -302,8 +348,18 @@ class _Toolbar extends StatelessWidget {
                 ),
               if (!controller.loading && (controller.error != null || controller.master.isEmpty))
                 _IconButton(tooltip: '重新读取', label: '读取', onPressed: () => controller.reload()),
+              if (onShare != null && !shareArmed)
+                _IconButton(tooltip: '分享', label: '分享', onPressed: onShare!),
             ],
           ),
+          if (onShare != null && shareArmed)
+            Align(
+              alignment: Alignment.centerRight,
+              child: TextButton(
+                onPressed: onShare,
+                child: const Text('点击一个batch来分享', style: TextStyle(color: DeskColors.amber, fontSize: 13)),
+              ),
+            ),
           if (controller.loading)
             Padding(
               padding: const EdgeInsets.only(top: 8, right: 8),

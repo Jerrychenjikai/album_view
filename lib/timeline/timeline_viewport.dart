@@ -1,4 +1,5 @@
 import 'time_resolution.dart';
+import 'timeline_metrics.dart';
 
 /// Horizontal scale and scroll of the infinite time axis.
 ///
@@ -58,7 +59,7 @@ double clampTimelineScroll({
   required double viewWidth,
   required Iterable<double> dayMarks,
   double edgePad = 0,
-  double inset = 32,
+  double inset = TimelineMetrics.scrollInset,
 }) {
   if (viewWidth <= 0 || pixelsPerDay <= 0) return scrollX;
   double? minDays;

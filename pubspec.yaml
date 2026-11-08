@@ -50,7 +50,8 @@ dependencies:
   ffi: ^2.1.3
   url_launcher: ^6.3.1
   android_intent_plus: ^6.0.0
-  flutter_launcher_icons: ^0.13.1
+  # iOS / Android 分享图拉起系统分享面板。桌面端界面不出现这个按钮。
+  share_plus: ^10.1.4
 
 dev_dependencies:
   flutter_test:
@@ -73,6 +74,9 @@ flutter:
   # included with your application, so that you can use the icons in
   # the material Icons class.
   uses-material-design: true
+
+  assets:
+    - assets/share_desk.jpg
 
 flutter_launcher_icons:
   android: "launcher_icon"
