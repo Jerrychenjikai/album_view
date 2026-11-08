@@ -100,7 +100,6 @@ class _AlbumHomePageState extends State<AlbumHomePage> {
                         _Toolbar(
                           controller: controller,
                           track: _track,
-                          onZoom: _zoom,
                           onFolder: _editFolder,
                           shareArmed: _shareArmed,
                           onShare: _onPhone ? _toggleShare : null,
@@ -147,7 +146,8 @@ class _AlbumHomePageState extends State<AlbumHomePage> {
                     if (_shareBatch != null)
                       Positioned.fill(
                         child: ShareSheet(
-                          items: _shareBatch!.items,
+                          items: _shareItems(),
+                          onNeedThumbs: controller.prioritizeThumbs,
                           resolveOriginal: controller.loader.materializeOriginal,
                           onClose: () => setState(() => _shareBatch = null),
                         ),
@@ -195,6 +195,15 @@ class _AlbumHomePageState extends State<AlbumHomePage> {
       return;
     }
     setState(() => _shareBatch = batch);
+    final photos = [for (final item in batch.items) if (item.kind == MediaKind.image) item];
+    controller.prioritizeThumbs(photos.take(8).toList());
+  }
+
+  List<MediaAsset> _shareItems() {
+    final batch = _shareBatch;
+    if (batch == null) return const [];
+    final byId = {for (final asset in controller.master) asset.id: asset};
+    return [for (final item in batch.items) byId[item.id] ?? item];
   }
 
   void _toast(String text) {
@@ -300,7 +309,6 @@ class _AlbumHomePageState extends State<AlbumHomePage> {
 class _Toolbar extends StatelessWidget {
   final AlbumController controller;
   final double track;
-  final void Function(double factor) onZoom;
   final VoidCallback onFolder;
   final bool shareArmed;
   final VoidCallback? onShare;
@@ -308,7 +316,6 @@ class _Toolbar extends StatelessWidget {
   const _Toolbar({
     required this.controller,
     required this.track,
-    required this.onZoom,
     required this.onFolder,
     required this.shareArmed,
     required this.onShare,
@@ -333,8 +340,6 @@ class _Toolbar extends StatelessWidget {
               const Spacer(),
               Text('按${resolution.label}', style: const TextStyle(color: DeskColors.muted, fontSize: 13)),
               const SizedBox(width: 4),
-              _IconButton(tooltip: '缩小', label: '−', onPressed: () => onZoom(1 / 1.18)),
-              _IconButton(tooltip: '放大', label: '+', onPressed: () => onZoom(1.18)),
               _IconButton(
                 tooltip: '回到今天',
                 label: '今天',
@@ -355,9 +360,20 @@ class _Toolbar extends StatelessWidget {
           if (onShare != null && shareArmed)
             Align(
               alignment: Alignment.centerRight,
-              child: TextButton(
-                onPressed: onShare,
-                child: const Text('点击一个batch来分享', style: TextStyle(color: DeskColors.amber, fontSize: 13)),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Text('点击一个batch来分享', style: TextStyle(color: DeskColors.amber, fontSize: 13)),
+                  TextButton(
+                    onPressed: onShare,
+                    style: TextButton.styleFrom(
+                      foregroundColor: DeskColors.paper,
+                      minimumSize: const Size(44, 36),
+                      padding: const EdgeInsets.symmetric(horizontal: 10),
+                    ),
+                    child: const Text('取消'),
+                  ),
+                ],
               ),
             ),
           if (controller.loading)

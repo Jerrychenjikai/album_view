@@ -97,7 +97,7 @@ void _polaroid(Canvas canvas, double cw, double ch, ui.Image photo, _Slot slot) 
   );
   canvas.drawRRect(
     RRect.fromRectAndRadius(frame, const Radius.circular(4)),
-    Paint()..color = const Color(0xFFF3EFE4),
+    Paint()..color = const Color(0xFFB59262),
   );
   final window = Rect.fromLTWH(
     frame.left + pad,

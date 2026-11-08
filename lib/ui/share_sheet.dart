@@ -14,12 +14,14 @@ import '../theme/app_theme.dart';
 class ShareSheet extends StatefulWidget {
   final List<MediaAsset> items;
   final Future<String?> Function(MediaAsset asset) resolveOriginal;
+  final void Function(List<MediaAsset> assets) onNeedThumbs;
   final VoidCallback onClose;
 
   const ShareSheet({
     super.key,
     required this.items,
     required this.resolveOriginal,
+    required this.onNeedThumbs,
     required this.onClose,
   });
 
@@ -36,6 +38,7 @@ class _ShareSheetState extends State<ShareSheet> {
   String _note = '';
   double _drag = 0;
   bool _exporting = false;
+  final Set<String> _thumbAsked = {};
 
   List<MediaAsset> get _images => widget.items.where((item) => item.kind == MediaKind.image).toList();
 
@@ -43,6 +46,35 @@ class _ShareSheetState extends State<ShareSheet> {
   void initState() {
     super.initState();
     _rebuild();
+  }
+
+  @override
+  void didUpdateWidget(ShareSheet oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (_picked.isEmpty) return;
+    var changed = false;
+    for (final id in _picked) {
+      final before = _lookup(oldWidget.items, id);
+      final after = _lookup(widget.items, id);
+      if (before?.thumbnailPath != after?.thumbnailPath || before?.hasThumbnail != after?.hasThumbnail) {
+        changed = true;
+        break;
+      }
+    }
+    if (changed) _rebuild();
+  }
+
+  MediaAsset? _lookup(List<MediaAsset> items, String id) {
+    for (final item in items) {
+      if (item.id == id) return item;
+    }
+    return null;
+  }
+
+  void _askThumb(MediaAsset asset) {
+    if (asset.hasThumbnail || _thumbAsked.contains(asset.id)) return;
+    _thumbAsked.add(asset.id);
+    widget.onNeedThumbs([asset]);
   }
 
   Future<Uint8List?> _bytes(MediaAsset asset) async {
@@ -58,6 +90,7 @@ class _ShareSheetState extends State<ShareSheet> {
     }
     final memory = asset.thumbnailBytes;
     if (memory != null && memory.isNotEmpty) return memory;
+    _askThumb(asset);
     return null;
   }
 
@@ -139,11 +172,14 @@ class _ShareSheetState extends State<ShareSheet> {
       type: MaterialType.transparency,
       child: Stack(
         children: [
-          GestureDetector(
-            onTap: widget.onClose,
-            child: BackdropFilter(
-              filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
-              child: const ColoredBox(color: Color(0x8C1A1612)),
+          Positioned.fill(
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: () {},
+              child: BackdropFilter(
+                filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
+                child: const ColoredBox(color: Color(0x8C1A1612)),
+              ),
             ),
           ),
           SafeArea(
@@ -171,6 +207,7 @@ class _ShareSheetState extends State<ShareSheet> {
                 ),
                 Expanded(
                   child: GestureDetector(
+                    behavior: HitTestBehavior.opaque,
                     onHorizontalDragUpdate: (event) => _drag += event.delta.dx,
                     onHorizontalDragEnd: (_) {
                       if (_drag <= -48) _shift(1);
@@ -199,6 +236,7 @@ class _ShareSheetState extends State<ShareSheet> {
                   height: 96,
                   child: ListView.separated(
                     scrollDirection: Axis.horizontal,
+                    cacheExtent: 160,
                     padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
                     itemCount: images.length,
                     separatorBuilder: (_, __) => const SizedBox(width: 8),
@@ -212,12 +250,12 @@ class _ShareSheetState extends State<ShareSheet> {
                           width: 58,
                           padding: const EdgeInsets.fromLTRB(3, 3, 3, 8),
                           decoration: BoxDecoration(
-                            color: DeskColors.paper,
+                            color: const Color(0xFFB59262),
                             border: Border.all(color: on ? DeskColors.amber : Colors.transparent, width: 2),
                           ),
                           child: Stack(
                             children: [
-                              Positioned.fill(child: _Thumb(asset: asset)),
+                              Positioned.fill(child: _LazyThumb(asset: asset, onNeed: _askThumb)),
                               if (on)
                                 Positioned(
                                   right: 0,
@@ -249,25 +287,74 @@ class _ShareSheetState extends State<ShareSheet> {
   }
 }
 
-class _Thumb extends StatelessWidget {
+class _LazyThumb extends StatefulWidget {
   final MediaAsset asset;
+  final void Function(MediaAsset asset) onNeed;
 
-  const _Thumb({required this.asset});
+  const _LazyThumb({required this.asset, required this.onNeed});
+
+  @override
+  State<_LazyThumb> createState() => _LazyThumbState();
+}
+
+class _LazyThumbState extends State<_LazyThumb> {
+  @override
+  void initState() {
+    super.initState();
+    _ask();
+  }
+
+  @override
+  void didUpdateWidget(_LazyThumb oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.asset.id != widget.asset.id) _ask();
+  }
+
+  void _ask() {
+    if (widget.asset.hasThumbnail) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || widget.asset.hasThumbnail) return;
+      widget.onNeed(widget.asset);
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
+    final asset = widget.asset;
     final bytes = asset.thumbnailBytes;
     if (bytes != null && bytes.isNotEmpty) {
-      return Image.memory(bytes, fit: BoxFit.cover);
+      return Image.memory(bytes, fit: BoxFit.cover, gaplessPlayback: true);
     }
     final path = asset.thumbnailPath;
     if (path != null && path.isNotEmpty) {
-      return Image.file(File(path), fit: BoxFit.cover, cacheWidth: 160);
+      return Image.file(
+        File(path),
+        fit: BoxFit.cover,
+        cacheWidth: 160,
+        gaplessPlayback: true,
+        errorBuilder: (_, __, ___) {
+          widget.onNeed(asset);
+          return const _ThumbWait();
+        },
+      );
     }
-    final file = asset.filePath;
-    if (file.isNotEmpty && File(file).existsSync()) {
-      return Image.file(File(file), fit: BoxFit.cover, cacheWidth: 160);
-    }
-    return const ColoredBox(color: Color(0xFFD9D0C2));
+    return const _ThumbWait();
+  }
+}
+
+class _ThumbWait extends StatelessWidget {
+  const _ThumbWait();
+
+  @override
+  Widget build(BuildContext context) {
+    return const DecoratedBox(
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [Color(0xFF8A7156), Color(0xFF4E4034)],
+        ),
+      ),
+    );
   }
 }
