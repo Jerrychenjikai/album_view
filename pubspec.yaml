@@ -77,6 +77,8 @@ flutter:
 
   assets:
     - assets/share_desk.jpg
+    - assets/share_board.jpg
+    - assets/share_lawn.jpg
 
 flutter_launcher_icons:
   android: "launcher_icon"
