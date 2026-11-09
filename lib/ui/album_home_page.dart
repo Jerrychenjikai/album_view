@@ -33,6 +33,7 @@ class _AlbumHomePageState extends State<AlbumHomePage> {
   bool _picking = false;
   bool _shareArmed = false;
   MediaBatch? _shareBatch;
+  Offset? _shareOrigin;
 
   @override
   void initState() {
@@ -147,9 +148,13 @@ class _AlbumHomePageState extends State<AlbumHomePage> {
                       Positioned.fill(
                         child: ShareSheet(
                           items: _shareItems(),
+                          originGlobal: _shareOrigin,
                           onNeedThumbs: controller.prioritizeThumbs,
                           resolveOriginal: controller.loader.materializeOriginal,
-                          onClose: () => setState(() => _shareBatch = null),
+                          onClose: () => setState(() {
+                            _shareBatch = null;
+                            _shareOrigin = null;
+                          }),
                         ),
                       ),
                   ],
@@ -181,11 +186,14 @@ class _AlbumHomePageState extends State<AlbumHomePage> {
   void _toggleShare() {
     setState(() {
       _shareArmed = !_shareArmed;
-      if (!_shareArmed) _shareBatch = null;
+      if (!_shareArmed) {
+        _shareBatch = null;
+        _shareOrigin = null;
+      }
     });
   }
 
-  void _tryShare(MediaBatch batch) {
+  void _tryShare(MediaBatch batch, Offset? origin) {
     if (batch.items.length > sharePhotoLimit) {
       _toast('这一摞超过 100 张。请放大时间轴之后再点选。');
       return;
@@ -194,7 +202,10 @@ class _AlbumHomePageState extends State<AlbumHomePage> {
       _toast('这一摞里没有可以分享的照片。');
       return;
     }
-    setState(() => _shareBatch = batch);
+    setState(() {
+      _shareBatch = batch;
+      _shareOrigin = origin;
+    });
     final photos = [for (final item in batch.items) if (item.kind == MediaKind.image) item];
     controller.prioritizeThumbs(photos.take(8).toList());
   }
