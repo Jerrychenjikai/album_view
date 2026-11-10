@@ -81,6 +81,7 @@ flutter:
     - assets/share_gallery.jpg
     - assets/share_album.jpg
     - assets/share_frames.jpg
+    - assets/share_polaroid.jpg
 
 flutter_launcher_icons:
   android: "launcher_icon"

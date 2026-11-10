@@ -9,8 +9,10 @@ import 'package:image/image.dart' as img;
 part 'share_album.dart';
 part 'share_board.dart';
 part 'share_desk.dart';
+part 'share_film.dart';
 part 'share_frames.dart';
 part 'share_gallery.dart';
+part 'share_polaroid.dart';
 part 'share_print.dart';
 
 const int sharePhotoLimit = 100;
@@ -29,6 +31,8 @@ const List<ShareStyle> shareStyles = [
   ShareStyle('gallery', '画廊'),
   ShareStyle('album', '相簿'),
   ShareStyle('frames', '相框'),
+  ShareStyle('film', '胶片'),
+  ShareStyle('polaroid', '拍立得'),
 ];
 
 class _Slot {
@@ -55,6 +59,8 @@ class _Style {
   final double foot;
   final double warm;
   final bool frames;
+  final bool film;
+  final bool polaroid;
   final List<List<_Slot>> layouts;
 
   const _Style({
@@ -72,6 +78,8 @@ class _Style {
     this.foot = 0.2,
     this.warm = 0,
     this.frames = false,
+    this.film = false,
+    this.polaroid = false,
   });
 }
 
@@ -81,6 +89,8 @@ const Map<String, _Style> _styles = {
   'gallery': _galleryStyle,
   'album': _albumStyle,
   'frames': _framesStyle,
+  'film': _filmStyle,
+  'polaroid': _polaroidStyle,
 };
 
 final Map<String, ui.Image> _backgrounds = {};
@@ -135,7 +145,6 @@ Future<Uint8List> composeShareCard(List<Uint8List> photos, {String styleId = 'de
   if (style == null) {
     throw StateError('还没有这个风格');
   }
-  final back = await _background(style.asset);
   final decoded = <ui.Image>[];
   for (final bytes in photos.take(3)) {
     final image = await _decode(bytes);
@@ -143,11 +152,25 @@ Future<Uint8List> composeShareCard(List<Uint8List> photos, {String styleId = 'de
   }
   final recorder = ui.PictureRecorder();
   final canvas = Canvas(recorder);
-  canvas.drawImage(back, Offset.zero, Paint());
-  final cw = back.width.toDouble();
-  final ch = back.height.toDouble();
+  late final double cw;
+  late final double ch;
+  ui.Image? backImage;
+  if (style.film) {
+    cw = _filmW;
+    ch = _filmH;
+  } else {
+    final back = await _background(style.asset);
+    backImage = back;
+    canvas.drawImage(back, Offset.zero, Paint());
+    cw = back.width.toDouble();
+    ch = back.height.toDouble();
+  }
   final warmed = <ui.Image>[];
-  if (style.gallery) {
+  if (style.film) {
+    await _paintFilm(canvas, cw, ch, decoded, style);
+  } else if (style.polaroid) {
+    _paintPolaroidDesk(canvas, backImage!, decoded, style);
+  } else if (style.gallery) {
     _paintGallery(canvas, cw, ch, decoded, style);
   } else if (style.frames) {
     warmed.addAll(await _paintFrames(canvas, cw, ch, decoded, style));
@@ -156,7 +179,7 @@ Future<Uint8List> composeShareCard(List<Uint8List> photos, {String styleId = 'de
     await _paintPrints(canvas, cw, ch, decoded, style, grain);
   }
   final picture = recorder.endRecording();
-  final out = await picture.toImage(back.width, back.height);
+  final out = await picture.toImage(cw.round(), ch.round());
   picture.dispose();
   for (final image in decoded) {
     image.dispose();
