@@ -10,6 +10,7 @@ import 'image_loader.dart';
 import 'media_probe.dart';
 import 'still_thumb.dart';
 import 'thumbnail_cache.dart';
+import 'library_index.dart';
 import 'windows_thumb.dart';
 
 /// Shared folder scanner for macOS and Windows.
@@ -54,6 +55,7 @@ class DesktopLibrary {
 
   Future<List<MediaAsset>> load({
     MediaFilter filter = const MediaFilter(),
+    bool refresh = false,
     void Function(List<MediaAsset> batch)? onBatch,
     void Function(LoadProgress progress)? onProgress,
   }) async {
@@ -64,6 +66,18 @@ class DesktopLibrary {
         '点「来源」写一个照片文件夹，或把照片放进这个目录。',
       );
     }
+    final rootPath = root.absolute.path;
+    if (!refresh) {
+      final cached = await LibraryIndex.read(rootPath);
+      if (cached != null) {
+        final found = <MediaAsset>[];
+        for (final asset in cached) {
+          if (filter.accepts(asset)) found.add(asset);
+        }
+        _emit(found, onBatch, onProgress);
+        return found;
+      }
+    }
 
     final files = <File>[];
     onProgress?.call(LoadProgress(done: 0, total: 0, counting: true));
@@ -73,16 +87,20 @@ class DesktopLibrary {
     final total = files.length;
     onProgress?.call(LoadProgress(done: 0, total: total));
 
+    final parsed = <MediaAsset>[];
     final found = <MediaAsset>[];
     final pending = <MediaAsset>[];
     for (var index = 0; index < files.length; index++) {
       final asset = await _assetFromFile(files[index]);
-      if (asset != null && filter.accepts(asset)) {
-        found.add(asset);
-        pending.add(asset);
-        if (pending.length >= 100) {
-          onBatch?.call(List<MediaAsset>.from(pending));
-          pending.clear();
+      if (asset != null) {
+        parsed.add(asset);
+        if (filter.accepts(asset)) {
+          found.add(asset);
+          pending.add(asset);
+          if (pending.length >= 100) {
+            onBatch?.call(List<MediaAsset>.from(pending));
+            pending.clear();
+          }
         }
       }
       if (index % 6 == 0 || index == files.length - 1) {
@@ -90,9 +108,26 @@ class DesktopLibrary {
       }
     }
     if (pending.isNotEmpty) onBatch?.call(List<MediaAsset>.from(pending));
+    parsed.sort((a, b) => a.createdAt.compareTo(b.createdAt));
     found.sort((a, b) => a.createdAt.compareTo(b.createdAt));
+    try {
+      await LibraryIndex.write(rootPath, parsed);
+    } catch (_) {}
     onProgress?.call(LoadProgress(done: total, total: total));
     return found;
+  }
+
+  void _emit(
+    List<MediaAsset> found,
+    void Function(List<MediaAsset> batch)? onBatch,
+    void Function(LoadProgress progress)? onProgress,
+  ) {
+    const size = 200;
+    for (var start = 0; start < found.length; start += size) {
+      final end = start + size > found.length ? found.length : start + size;
+      onBatch?.call(found.sublist(start, end));
+    }
+    onProgress?.call(LoadProgress(done: found.length, total: found.length));
   }
 
   Future<void> _collect(

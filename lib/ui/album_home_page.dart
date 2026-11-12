@@ -349,6 +349,7 @@ class _Toolbar extends StatelessWidget {
             children: [
               const Text('光桌', style: TextStyle(fontSize: 22, fontWeight: FontWeight.w600, letterSpacing: 1.2)),
               const Spacer(),
+              if (controller.limitsImportByDate) _ImportYearsMenu(controller: controller),
               Text('按${resolution.label}', style: const TextStyle(color: DeskColors.muted, fontSize: 13)),
               const SizedBox(width: 4),
               _IconButton(
@@ -361,6 +362,12 @@ class _Toolbar extends StatelessWidget {
                   tooltip: defaultTargetPlatform == TargetPlatform.macOS ? '选择文件夹' : '照片文件夹',
                   label: '来源',
                   onPressed: onFolder,
+                ),
+              if (allowFolder)
+                _IconButton(
+                  tooltip: '重新扫描文件夹，并更新已保存的列表',
+                  label: '更新',
+                  onPressed: () => controller.reload(refresh: true),
                 ),
               if (!controller.loading && (controller.error != null || controller.master.isEmpty))
                 _IconButton(tooltip: '重新读取', label: '读取', onPressed: () => controller.reload()),
@@ -462,6 +469,42 @@ class _Toolbar extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _ImportYearsMenu extends StatelessWidget {
+  final AlbumController controller;
+
+  const _ImportYearsMenu({required this.controller});
+
+  @override
+  Widget build(BuildContext context) {
+    final years = controller.importYears;
+    final label = years <= 0 ? '导入全部' : '最近 $years 年';
+    return PopupMenuButton<int>(
+      tooltip: '相册很大时，只导入最近几年会快很多',
+      initialValue: years,
+      color: DeskColors.raised,
+      onSelected: controller.setImportYears,
+      itemBuilder: (context) => [
+        for (final value in const [0, 1, 2, 3, 5])
+          PopupMenuItem<int>(
+            value: value,
+            child: Text(value == 0 ? '全部' : '最近 $value 年'),
+          ),
+        ],
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+        child: Text(
+          label,
+          style: TextStyle(
+            color: years <= 0 ? DeskColors.paper : DeskColors.amber,
+            fontSize: 13,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
       ),
     );
   }

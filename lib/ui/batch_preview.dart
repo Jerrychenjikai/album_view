@@ -60,6 +60,9 @@ class _BatchPreviewState extends State<BatchPreview> with TickerProviderStateMix
   Size _view = Size.zero;
   double _offset = 0;
   double _maxOffset = 0;
+  double _stride = 1;
+  int _snapGen = 0;
+  Timer? _snapWait;
   Timer? _hold;
   String? _holdId;
   String? _sliceId;
@@ -97,6 +100,7 @@ class _BatchPreviewState extends State<BatchPreview> with TickerProviderStateMix
   @override
   void dispose() {
     _hold?.cancel();
+    _snapWait?.cancel();
     _sliceScroll.dispose();
     _spread.dispose();
     _pop.dispose();
@@ -346,6 +350,7 @@ class _BatchPreviewState extends State<BatchPreview> with TickerProviderStateMix
         final cardW = cardH * 142 / 172;
         _view = Size(constraints.maxWidth, constraints.maxHeight);
         final stride = cardW + 20;
+        _stride = stride;
         final columnCount = (page.length / rows).ceil();
         final gridH = rows * cardH + (rows - 1) * gap;
         _maxOffset = math.max(0.0, 36 + columnCount * stride - constraints.maxWidth);
@@ -591,6 +596,7 @@ class _BatchPreviewState extends State<BatchPreview> with TickerProviderStateMix
       _travel = 0;
       _pinch = null;
       _cancelHold();
+      _cancelSnap();
       if (_zoomId == null && _spread.value >= 0.98) {
         final id = _hitCard(event.position);
         if (id != null) {
@@ -652,6 +658,7 @@ class _BatchPreviewState extends State<BatchPreview> with TickerProviderStateMix
     _pointers.remove(event.pointer);
     if (_pointers.length < 2) _pinch = null;
     _cancelHold();
+    if (_zoomId == null && _pointers.isEmpty) _snapOffset();
     if (_spread.value < 0.98) return;
     if (wasDrag || held || _pointers.isNotEmpty) return;
     if (_inBar(event.position) && _zoomId == null) return;
@@ -708,6 +715,46 @@ class _BatchPreviewState extends State<BatchPreview> with TickerProviderStateMix
     setState(() {
       _offset = (_offset + event.scrollDelta.dy).clamp(0.0, _maxOffset);
     });
+    _scheduleSnap();
+  }
+
+  void _cancelSnap() {
+    _snapGen += 1;
+    _snapWait?.cancel();
+  }
+
+  void _scheduleSnap() {
+    _cancelSnap();
+    _snapWait = Timer(const Duration(milliseconds: 90), () {
+      if (mounted) _snapOffset();
+    });
+  }
+
+  void _snapOffset() {
+    final target = _nearestPhotoEdge(_offset, _stride, _maxOffset);
+    if ((target - _offset).abs() < 0.5) return;
+    if (MediaQuery.disableAnimationsOf(context)) {
+      setState(() => _offset = target);
+      return;
+    }
+    final from = _offset;
+    final gen = ++_snapGen;
+    final start = DateTime.now();
+    void tick() {
+      if (!mounted || gen != _snapGen) return;
+      final raw = (DateTime.now().difference(start).inMilliseconds / 180).clamp(0.0, 1.0);
+      final eased = 1 - math.pow(1 - raw, 3).toDouble();
+      setState(() => _offset = from + (target - from) * eased);
+      if (raw < 1) Timer(const Duration(milliseconds: 16), tick);
+    }
+    tick();
+  }
+
+  double _nearestPhotoEdge(double offset, double stride, double max) {
+    if (stride <= 1 || max <= 0) return 0;
+    final snapped = (offset / stride).round() * stride;
+    final clamped = snapped.clamp(0.0, max);
+    return (max - offset).abs() <= (clamped - offset).abs() ? max : clamped;
   }
 }
 

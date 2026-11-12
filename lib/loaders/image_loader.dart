@@ -46,8 +46,11 @@ abstract interface class ImageLoader {
   /// in pieces instead of waiting for the whole library.
   /// [onProgress] reports the scan so the toolbar can show when batches
   /// will become openable.
+  /// Desktop: [refresh] false reads the saved list and does not walk the
+  /// folder. [refresh] true scans and replaces that list.
   Future<List<MediaAsset>> load({
     MediaFilter filter = const MediaFilter(),
+    bool refresh = false,
     void Function(List<MediaAsset> batch)? onBatch,
     void Function(LoadProgress progress)? onProgress,
   });
@@ -76,3 +79,7 @@ class LibraryException implements Exception {
 
 /// Shared preferences key. Do not rename — desktop loaders read this exact key.
 const String imagePathPrefsKey = 'image_path';
+
+/// How many recent years the phone library imports. `0` means the whole album.
+/// Android and iOS push this into the system query. Desktop ignores it.
+const String importYearsPrefsKey = 'import_years';

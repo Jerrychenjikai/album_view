@@ -73,6 +73,35 @@ class CameraInfo {
     ];
     return bits.isEmpty ? '无曝光信息' : bits.join('  ·  ');
   }
+
+  Map<String, Object?> toJson() => {
+        'make': make,
+        'model': model,
+        'lensMake': lensMake,
+        'lensModel': lensModel,
+        'focalLengthMm': focalLengthMm,
+        'focalLength35mm': focalLength35mm,
+        'aperture': aperture,
+        'iso': iso,
+        'exposureSeconds': exposureSeconds,
+        'exifOrientation': exifOrientation,
+      };
+
+  static CameraInfo fromJson(Object? raw) {
+    if (raw is! Map) return CameraInfo.empty;
+    return CameraInfo(
+      make: raw['make'] as String?,
+      model: raw['model'] as String?,
+      lensMake: raw['lensMake'] as String?,
+      lensModel: raw['lensModel'] as String?,
+      focalLengthMm: (raw['focalLengthMm'] as num?)?.toDouble(),
+      focalLength35mm: (raw['focalLength35mm'] as num?)?.toDouble(),
+      aperture: (raw['aperture'] as num?)?.toDouble(),
+      iso: (raw['iso'] as num?)?.toInt(),
+      exposureSeconds: (raw['exposureSeconds'] as num?)?.toDouble(),
+      exifOrientation: (raw['exifOrientation'] as num?)?.toInt(),
+    );
+  }
 }
 
 String _trimNum(double value) {
@@ -109,6 +138,26 @@ class GpsInfo {
     final lng = longitude.toStringAsFixed(5);
     if (altitude == null) return '$lat, $lng';
     return '$lat, $lng  ·  ${altitude!.toStringAsFixed(0)} m';
+  }
+
+  Map<String, Object?> toJson() => {
+        'latitude': latitude,
+        'longitude': longitude,
+        'altitude': altitude,
+        'city': city,
+      };
+
+  static GpsInfo? fromJson(Object? raw) {
+    if (raw is! Map) return null;
+    final latitude = raw['latitude'];
+    final longitude = raw['longitude'];
+    if (latitude is! num || longitude is! num) return null;
+    return GpsInfo(
+      latitude: latitude.toDouble(),
+      longitude: longitude.toDouble(),
+      altitude: (raw['altitude'] as num?)?.toDouble(),
+      city: raw['city'] as String?,
+    );
   }
 
   /// City only. A stored "street, city, region" keeps the city token.
@@ -309,6 +358,57 @@ class MediaAsset {
       gps: writeGps ? gps : (gps ?? this.gps),
       thumbnailBytes: writeThumbnailBytes ? thumbnailBytes : (thumbnailBytes ?? this.thumbnailBytes),
       thumbnailPath: writeThumbnailPath ? thumbnailPath : (thumbnailPath ?? this.thumbnailPath),
+    );
+  }
+
+  /// Persistent fields. Thumbnail bytes stay out: they are a runtime preview.
+  Map<String, Object?> toJson() => {
+        'id': id,
+        'filePath': filePath,
+        'fileName': fileName,
+        'kind': kind.name,
+        'mimeType': mimeType,
+        'fileSizeBytes': fileSizeBytes,
+        'width': width,
+        'height': height,
+        'rotationDegrees': rotationDegrees,
+        'durationMs': duration?.inMilliseconds,
+        'createdAt': createdAt.millisecondsSinceEpoch,
+        'modifiedAt': modifiedAt?.millisecondsSinceEpoch,
+        'albumName': albumName,
+        'camera': camera.toJson(),
+        'gps': gps?.toJson(),
+        'thumbnailPath': thumbnailPath,
+      };
+
+  static MediaAsset? fromJson(Object? raw) {
+    if (raw is! Map) return null;
+    final id = raw['id'];
+    final filePath = raw['filePath'];
+    final fileName = raw['fileName'];
+    final created = raw['createdAt'];
+    if (id is! String || filePath is! String || fileName is! String || created is! num) return null;
+    final kindName = raw['kind'];
+    final kind = kindName == 'video' ? MediaKind.video : MediaKind.image;
+    final durationMs = raw['durationMs'];
+    final modified = raw['modifiedAt'];
+    return MediaAsset(
+      id: id,
+      filePath: filePath,
+      fileName: fileName,
+      kind: kind,
+      createdAt: DateTime.fromMillisecondsSinceEpoch(created.toInt()),
+      mimeType: raw['mimeType'] as String?,
+      fileSizeBytes: (raw['fileSizeBytes'] as num?)?.toInt(),
+      width: (raw['width'] as num?)?.toInt(),
+      height: (raw['height'] as num?)?.toInt(),
+      rotationDegrees: (raw['rotationDegrees'] as num?)?.toInt() ?? 0,
+      duration: durationMs is num ? Duration(milliseconds: durationMs.toInt()) : null,
+      modifiedAt: modified is num ? DateTime.fromMillisecondsSinceEpoch(modified.toInt()) : null,
+      albumName: raw['albumName'] as String?,
+      camera: CameraInfo.fromJson(raw['camera']),
+      gps: GpsInfo.fromJson(raw['gps']),
+      thumbnailPath: raw['thumbnailPath'] as String?,
     );
   }
 }

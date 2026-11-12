@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:math' as math;
 import 'dart:typed_data';
@@ -44,6 +45,9 @@ class _ShareSheetState extends State<ShareSheet> with TickerProviderStateMixin {
   String _note = '';
   double _drag = 0;
   double _strip = 0;
+  double _thumbStride = 66;
+  double _maxStrip = 0;
+  int _snapGen = 0;
   bool _exporting = false;
   bool _closing = false;
   final Set<String> _thumbAsked = {};
@@ -252,6 +256,8 @@ class _ShareSheetState extends State<ShareSheet> with TickerProviderStateMixin {
           const thumbH = 76.0;
           const stride = 66.0;
           final maxStrip = (24 + images.length * stride - 8 - size.width).clamp(0.0, 100000.0);
+          _thumbStride = stride;
+          _maxStrip = maxStrip;
           return Stack(
             children: [
               Positioned.fill(
@@ -413,9 +419,12 @@ class _ShareSheetState extends State<ShareSheet> with TickerProviderStateMixin {
           opacity: fade,
           child: GestureDetector(
             onTap: () => _toggle(asset),
+            onHorizontalDragDown: (_) => _snapGen += 1,
             onHorizontalDragUpdate: (event) {
               setState(() => _strip = (_strip - event.delta.dx).clamp(0.0, maxStrip));
             },
+            onHorizontalDragEnd: (_) => _snapStrip(),
+            onHorizontalDragCancel: _snapStrip,
             child: DecoratedBox(
               decoration: BoxDecoration(
                 color: const Color(0xFFB59262),
@@ -449,6 +458,33 @@ class _ShareSheetState extends State<ShareSheet> with TickerProviderStateMixin {
         ),
       ),
     );
+  }
+
+  void _snapStrip() {
+    final target = _nearestPhotoEdge(_strip, _thumbStride, _maxStrip);
+    if ((target - _strip).abs() < 0.5) return;
+    if (MediaQuery.disableAnimationsOf(context)) {
+      setState(() => _strip = target);
+      return;
+    }
+    final from = _strip;
+    final gen = ++_snapGen;
+    final start = DateTime.now();
+    void tick() {
+      if (!mounted || gen != _snapGen) return;
+      final raw = (DateTime.now().difference(start).inMilliseconds / 180).clamp(0.0, 1.0);
+      final eased = 1 - math.pow(1 - raw, 3).toDouble();
+      setState(() => _strip = from + (target - from) * eased);
+      if (raw < 1) Timer(const Duration(milliseconds: 16), tick);
+    }
+    tick();
+  }
+
+  double _nearestPhotoEdge(double offset, double stride, double max) {
+    if (stride <= 1 || max <= 0) return 0;
+    final snapped = (offset / stride).round() * stride;
+    final clamped = snapped.clamp(0.0, max);
+    return (max - offset).abs() <= (clamped - offset).abs() ? max : clamped;
   }
 }
 

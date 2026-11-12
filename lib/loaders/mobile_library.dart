@@ -21,6 +21,7 @@ class MobileLibrary {
 
   Future<List<MediaAsset>> load({
     MediaFilter filter = const MediaFilter(),
+    bool refresh = false,
     void Function(List<MediaAsset> batch)? onBatch,
     void Function(LoadProgress progress)? onProgress,
   }) async {

@@ -36,10 +36,11 @@ class PlatformImageLoader implements ImageLoader {
   @override
   Future<List<MediaAsset>> load({
     MediaFilter filter = const MediaFilter(),
+    bool refresh = false,
     void Function(List<MediaAsset> batch)? onBatch,
     void Function(LoadProgress progress)? onProgress,
   }) {
-    return _library.load(filter: filter, onBatch: onBatch, onProgress: onProgress);
+    return _library.load(filter: filter, refresh: refresh, onBatch: onBatch, onProgress: onProgress);
   }
 
   @override

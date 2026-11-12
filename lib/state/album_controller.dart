@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:ui';
 
 import 'package:flutter/foundation.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../loaders/image_loader.dart';
 import '../models/media_asset.dart';
@@ -24,6 +25,8 @@ class AlbumController extends ChangeNotifier {
 
   List<MediaAsset> master = const [];
   QuickRange quickRange = QuickRange.all;
+  /// `0` imports the whole library. Only the phone loaders honor this.
+  int importYears = 0;
   MediaKind? kind;
   final Map<String, int> topIndex = {};
   String? selectedBatchId;
@@ -52,7 +55,12 @@ class AlbumController extends ChangeNotifier {
   final List<MediaAsset> _thumbQueue = [];
   int _thumbWorkers = 0;
   int _loadTicket = 0;
+  bool _importYearsReady = false;
   DateTime _lastProgressNote = DateTime.fromMillisecondsSinceEpoch(0);
+
+  /// Phone libraries can ask MediaStore / Photos for a date range.
+  /// Desktop has to read each file before it knows the capture time.
+  bool get limitsImportByDate => !loader.canConfigureFolder;
 
   /// Batches stay closed until the folder walk finishes.
   bool get canOpenBatches => !loading;
@@ -110,8 +118,9 @@ class AlbumController extends ChangeNotifier {
     );
   }
 
-  Future<void> reload() async {
+  Future<void> reload({bool refresh = false}) async {
     final ticket = ++_loadTicket;
+    final importFilter = await _importFilter();
     _glide?.cancel();
     _glide = null;
     loading = true;
@@ -137,6 +146,8 @@ class AlbumController extends ChangeNotifier {
         if (ticket == _loadTicket) notifyListeners();
       } catch (_) {}
       final assets = await loader.load(
+        filter: importFilter,
+        refresh: refresh,
         onBatch: (batch) {
           if (ticket != _loadTicket || batch.isEmpty) return;
           _scanBuffer.addAll(batch);
@@ -188,6 +199,45 @@ class AlbumController extends ChangeNotifier {
   Future<void> setFolder(String path) async {
     await loader.setImagePath(path);
     await reload();
+  }
+
+  Future<void> setImportYears(int years) async {
+    final next = _allowedImportYears(years);
+    if (importYears == next && _importYearsReady) return;
+    importYears = next;
+    _importYearsReady = true;
+    final prefs = await SharedPreferences.getInstance();
+    if (next <= 0) {
+      await prefs.remove(importYearsPrefsKey);
+    } else {
+      await prefs.setInt(importYearsPrefsKey, next);
+    }
+    await reload();
+  }
+
+  Future<MediaFilter> _importFilter() async {
+    if (!limitsImportByDate) return const MediaFilter();
+    await _readImportYears();
+    if (importYears <= 0) return const MediaFilter();
+    return MediaFilter(startInclusive: _yearsAgo(importYears));
+  }
+
+  Future<void> _readImportYears() async {
+    if (_importYearsReady) return;
+    final prefs = await SharedPreferences.getInstance();
+    importYears = _allowedImportYears(prefs.getInt(importYearsPrefsKey) ?? 0);
+    _importYearsReady = true;
+  }
+
+  int _allowedImportYears(int years) {
+    return const {1, 2, 3, 5}.contains(years) ? years : 0;
+  }
+
+  DateTime _yearsAgo(int years) {
+    final now = DateTime.now();
+    final monthStart = DateTime(now.year - years, now.month, 1);
+    final lastDay = DateTime(monthStart.year, monthStart.month + 1, 0).day;
+    return DateTime(monthStart.year, monthStart.month, now.day > lastDay ? lastDay : now.day);
   }
 
   void setQuickRange(QuickRange value) {
