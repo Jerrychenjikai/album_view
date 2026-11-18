@@ -25,6 +25,10 @@ class MediaBatch {
   /// Short calendar label for the whole bucket ("3月2日", "2024", "2016–2018").
   final String label;
 
+  /// Start and end of the time bucket this batch corresponds to (optional).
+  final DateTime? timeRangeStart;
+  final DateTime? timeRangeEnd;
+
   const MediaBatch({
     required this.id,
     required this.items,
@@ -33,6 +37,8 @@ class MediaBatch {
     this.rotation = 0,
     this.lane = 0,
     this.label = '',
+    this.timeRangeStart,
+    this.timeRangeEnd,
   });
 
   MediaAsset? get topItem {
@@ -50,6 +56,18 @@ class MediaBatch {
     if (items.isEmpty) return DateTime.fromMillisecondsSinceEpoch(0);
     final local = items.first.createdAt.toLocal();
     return DateTime(local.year, local.month, local.day);
+  }
+
+  DateTime get startTime {
+    if (timeRangeStart != null) return timeRangeStart!;
+    if (items.isNotEmpty) return items.first.createdAt.toLocal();
+    return day;
+  }
+
+  DateTime get endTime {
+    if (timeRangeEnd != null) return timeRangeEnd!;
+    if (items.isNotEmpty) return items.last.createdAt.toLocal();
+    return day.add(const Duration(days: 1));
   }
 
   /// City that appears most often in this stack. Street and region are dropped.
@@ -78,6 +96,8 @@ class MediaBatch {
     double? rotation,
     int? lane,
     String? label,
+    DateTime? timeRangeStart,
+    DateTime? timeRangeEnd,
   }) {
     return MediaBatch(
       id: id,
@@ -87,6 +107,8 @@ class MediaBatch {
       rotation: rotation ?? this.rotation,
       lane: lane ?? this.lane,
       label: label ?? this.label,
+      timeRangeStart: timeRangeStart ?? this.timeRangeStart,
+      timeRangeEnd: timeRangeEnd ?? this.timeRangeEnd,
     );
   }
 }

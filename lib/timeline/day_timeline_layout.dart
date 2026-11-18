@@ -60,6 +60,8 @@ class DayTimelineLayout {
           rotation: rotation,
           lane: lane,
           label: bucket.label,
+          timeRangeStart: bucket.start,
+          timeRangeEnd: bucket.end,
         ),
       );
     }

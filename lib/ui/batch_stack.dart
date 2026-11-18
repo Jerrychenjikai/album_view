@@ -2,20 +2,25 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 
+import '../models/holiday.dart';
 import '../models/media_asset.dart';
 import '../models/media_batch.dart';
 import '../theme/app_theme.dart';
 import '../timeline/day_number.dart';
+import '../timeline/time_resolution.dart';
 import '../timeline/timeline_metrics.dart';
+import 'holiday_sticker.dart';
 
 class BatchStack extends StatelessWidget {
   final MediaBatch batch;
   final VoidCallback onTap;
+  final TimeResolution? resolution;
 
   const BatchStack({
     super.key,
     required this.batch,
     required this.onTap,
+    this.resolution,
   });
 
   @override
@@ -29,6 +34,8 @@ class BatchStack extends StatelessWidget {
       layers.add(positiveMod(top - depth, items.length));
     }
     layers.add(top);
+
+    final holiday = resolution != null ? HolidayRegistry.findHolidayForBatch(batch, resolution!) : null;
 
     return GestureDetector(
       onTap: onTap,
@@ -48,6 +55,8 @@ class BatchStack extends StatelessWidget {
                 caption: _caption(batch),
                 city: batch.dominantCity,
                 showCaption: layers[i] == top,
+                holiday: layers[i] == top ? holiday : null,
+                seed: '${batch.id}-batch',
               ),
           ],
         ),
@@ -70,6 +79,8 @@ class _Print extends StatelessWidget {
   final String caption;
   final String? city;
   final bool showCaption;
+  final Holiday? holiday;
+  final String seed;
 
   const _Print({
     required this.asset,
@@ -78,6 +89,8 @@ class _Print extends StatelessWidget {
     required this.caption,
     required this.city,
     required this.showCaption,
+    this.holiday,
+    this.seed = '',
   });
 
   @override
@@ -85,67 +98,84 @@ class _Print extends StatelessWidget {
     final dx = depthFromTop == 0 ? 0.0 : -depthFromTop * 7.0;
     final dy = depthFromTop * 5.0;
     final angle = baseRotation + depthFromTop * 0.035 * (depthFromTop.isOdd ? -1 : 1);
+    Widget card = Container(
+      width: TimelineMetrics.cardWidth,
+      height: TimelineMetrics.cardHeight,
+      decoration: BoxDecoration(
+        color: DeskColors.paper,
+        borderRadius: BorderRadius.circular(3),
+        border: Border.all(color: const Color(0xFFE4DCCB)),
+        boxShadow: [
+          BoxShadow(
+            color: const Color(0xFF000000).withOpacity(0.38),
+            blurRadius: 14,
+            offset: const Offset(0, 10),
+          ),
+        ],
+      ),
+      padding: const EdgeInsets.fromLTRB(7, 7, 7, 8),
+      child: Column(
+        children: [
+          Expanded(child: ClipRect(child: _Preview(asset: asset))),
+          const SizedBox(height: 6),
+          SizedBox(
+            height: 28,
+            width: double.infinity,
+            child: showCaption
+                ? Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        caption,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: DeskColors.ink,
+                          fontSize: 11,
+                          height: 1.15,
+                          fontWeight: FontWeight.w600,
+                          letterSpacing: 0.2,
+                        ),
+                      ),
+                      Text(
+                        city ?? '',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: Color(0xFF6E6558),
+                          fontSize: 10,
+                          height: 1.2,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ],
+                  )
+                : const SizedBox.shrink(),
+          ),
+        ],
+      ),
+    );
+
+    if (holiday != null) {
+      card = Stack(
+        clipBehavior: Clip.none,
+        children: [
+          card,
+          HolidayStickerWidget.forBatch(
+            holiday: holiday!,
+            seed: seed,
+            cardWidth: TimelineMetrics.cardWidth,
+            cardHeight: TimelineMetrics.cardHeight,
+          ),
+        ],
+      );
+    }
+
     return Transform.translate(
       offset: Offset(dx, dy),
       child: Transform.rotate(
         angle: angle,
-        child: Container(
-          width: TimelineMetrics.cardWidth,
-          height: TimelineMetrics.cardHeight,
-          decoration: BoxDecoration(
-            color: DeskColors.paper,
-            borderRadius: BorderRadius.circular(3),
-            border: Border.all(color: const Color(0xFFE4DCCB)),
-            boxShadow: [
-              BoxShadow(
-                color: const Color(0xFF000000).withOpacity(0.38),
-                blurRadius: 14,
-                offset: const Offset(0, 10),
-              ),
-            ],
-          ),
-          padding: const EdgeInsets.fromLTRB(7, 7, 7, 8),
-          child: Column(
-            children: [
-              Expanded(child: ClipRect(child: _Preview(asset: asset))),
-              const SizedBox(height: 6),
-              SizedBox(
-                height: 28,
-                width: double.infinity,
-                child: showCaption
-                    ? Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            caption,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
-                              color: DeskColors.ink,
-                              fontSize: 11,
-                              height: 1.15,
-                              fontWeight: FontWeight.w600,
-                              letterSpacing: 0.2,
-                            ),
-                          ),
-                          Text(
-                            city ?? '',
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
-                              color: Color(0xFF6E6558),
-                              fontSize: 10,
-                              height: 1.2,
-                              fontWeight: FontWeight.w500,
-                            ),
-                          ),
-                        ],
-                      )
-                    : const SizedBox.shrink(),
-              ),
-            ],
-          ),
-        ),
+        child: card,
       ),
     );
   }

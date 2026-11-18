@@ -43,8 +43,16 @@ class TimeBucket {
   final String id;
   final String label;
   final double centerDays;
+  final DateTime? start;
+  final DateTime? end;
 
-  const TimeBucket({required this.id, required this.label, required this.centerDays});
+  const TimeBucket({
+    required this.id,
+    required this.label,
+    required this.centerDays,
+    this.start,
+    this.end,
+  });
 }
 
 class RulerTick {
@@ -183,24 +191,34 @@ TimeBucket bucketFor(DateTime time, TimeResolution resolution) {
         id: step == 1 ? '${_stamp(start)}T${_two(startHour)}' : '${_stamp(start)}T${_two(startHour)}x$step',
         label: step == 1 ? '${t.month}月${t.day}日 ${_two(startHour)}:00' : '${t.day}日 ${_two(startHour)}–$endLabel',
         centerDays: (timeDays(start) + timeDays(end)) / 2,
+        start: start,
+        end: end,
       );
     case TimeUnit.day:
       final start = DateTime(t.year, t.month, t.day);
+      final end = start.add(const Duration(days: 1));
       return TimeBucket(
         id: _stamp(start),
         label: '${t.month}月${t.day}日',
         centerDays: timeDays(start) + 0.5,
+        start: start,
+        end: end,
       );
     case TimeUnit.days:
       final step = resolution.step <= 0 ? 3 : resolution.step;
       final n = dayNumber(t);
       final startN = n - _mod(n, step);
-      final start = dateFromDayNumber(startN);
+      final startD = dateFromDayNumber(startN);
+      final endD = dateFromDayNumber(startN + step);
       final last = dateFromDayNumber(startN + step - 1);
+      final start = DateTime(startD.year, startD.month, startD.day);
+      final end = DateTime(endD.year, endD.month, endD.day);
       return TimeBucket(
         id: 'd$step:${_stamp(start)}',
         label: '${start.month}月${start.day}日–${last.month}月${last.day}日',
         centerDays: startN + step / 2,
+        start: start,
+        end: end,
       );
     case TimeUnit.week:
     case TimeUnit.weeks:
@@ -209,12 +227,17 @@ TimeBucket bucketFor(DateTime time, TimeResolution resolution) {
       final monday = day.subtract(Duration(days: day.weekday - 1));
       final mondayN = dayNumber(monday);
       final startN = mondayN - _mod(mondayN - _fortnightAnchor, step);
-      final start = dateFromDayNumber(startN);
+      final startD = dateFromDayNumber(startN);
+      final endD = dateFromDayNumber(startN + step);
       final last = dateFromDayNumber(startN + step - 1);
+      final start = DateTime(startD.year, startD.month, startD.day);
+      final end = DateTime(endD.year, endD.month, endD.day);
       return TimeBucket(
         id: step == 7 ? _stamp(start) : 'w$step:${_stamp(start)}',
         label: '${start.month}月${start.day}日–${last.month}月${last.day}日',
         centerDays: startN + step / 2,
+        start: start,
+        end: end,
       );
     case TimeUnit.month:
     case TimeUnit.months:
@@ -237,6 +260,8 @@ TimeBucket bucketFor(DateTime time, TimeResolution resolution) {
         id: step == 1 ? '$sy-${_two(sm + 1)}' : 'm$step:$sy-${_two(sm + 1)}',
         label: label,
         centerDays: (timeDays(start) + timeDays(end)) / 2,
+        start: start,
+        end: end,
       );
     case TimeUnit.year:
       final start = DateTime(t.year, 1, 1);
@@ -245,6 +270,8 @@ TimeBucket bucketFor(DateTime time, TimeResolution resolution) {
         id: '${t.year}',
         label: '${t.year}',
         centerDays: (timeDays(start) + timeDays(end)) / 2,
+        start: start,
+        end: end,
       );
     case TimeUnit.years:
       final span = resolution.step <= 0 ? 3 : resolution.step;
@@ -255,6 +282,8 @@ TimeBucket bucketFor(DateTime time, TimeResolution resolution) {
         id: 'y$span:$startYear',
         label: '$startYear–${startYear + span - 1}',
         centerDays: (timeDays(start) + timeDays(end)) / 2,
+        start: start,
+        end: end,
       );
   }
 }

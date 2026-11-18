@@ -6,10 +6,12 @@ import 'dart:ui' show ImageFilter;
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 
+import '../models/holiday.dart';
 import '../models/media_asset.dart';
 import '../theme/app_theme.dart';
 import '../timeline/day_number.dart';
 import '../timeline/time_resolution.dart';
+import 'holiday_sticker.dart';
 
 /// Blurred light table, with one batch laid out in as many rows as the track.
 class BatchPreview extends StatefulWidget {
@@ -782,11 +784,12 @@ class _Polaroid extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final holiday = HolidayRegistry.holidayForPreviewAsset(asset);
     final reduce = MediaQuery.disableAnimationsOf(context);
     return _Flip(
       flipped: flipped,
       duration: reduce ? Duration.zero : const Duration(milliseconds: 520),
-      front: _Face(asset: asset, caption: caption),
+      front: _Face(asset: asset, caption: caption, holiday: holiday),
       back: _Back(asset: asset, locateLabel: locateLabel, locateKey: locateKey),
     );
   }
@@ -855,58 +858,78 @@ class _FlipState extends State<_Flip> with SingleTickerProviderStateMixin {
 class _Face extends StatelessWidget {
   final MediaAsset asset;
   final String caption;
+  final Holiday? holiday;
 
-  const _Face({required this.asset, required this.caption});
+  const _Face({required this.asset, required this.caption, this.holiday});
 
   @override
   Widget build(BuildContext context) {
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        color: DeskColors.paper,
-        borderRadius: BorderRadius.circular(3),
-        boxShadow: const [BoxShadow(color: Color(0x66000000), blurRadius: 22, offset: Offset(0, 12))],
-      ),
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(8, 8, 8, 10),
-        child: Column(
-          children: [
-            Expanded(
-              child: ClipRect(
-                child: Stack(
-                  fit: StackFit.expand,
-                  children: [
-                    _Still(asset: asset),
-                    if (asset.kind == MediaKind.video)
-                      Align(
-                        alignment: Alignment.bottomLeft,
-                        child: Container(
-                          margin: const EdgeInsets.all(6),
-                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                          color: const Color(0xCC1C1814),
-                          child: Text(
-                            asset.durationLabel.isEmpty ? '视频' : asset.durationLabel,
-                            style: const TextStyle(color: DeskColors.paper, fontSize: 11),
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final card = DecoratedBox(
+          decoration: BoxDecoration(
+            color: DeskColors.paper,
+            borderRadius: BorderRadius.circular(3),
+            boxShadow: const [BoxShadow(color: Color(0x66000000), blurRadius: 22, offset: Offset(0, 12))],
+          ),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(8, 8, 8, 10),
+            child: Column(
+              children: [
+                Expanded(
+                  child: ClipRect(
+                    child: Stack(
+                      fit: StackFit.expand,
+                      children: [
+                        _Still(asset: asset),
+                        if (asset.kind == MediaKind.video)
+                          Align(
+                            alignment: Alignment.bottomLeft,
+                            child: Container(
+                              margin: const EdgeInsets.all(6),
+                              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                              color: const Color(0xCC1C1814),
+                              child: Text(
+                                asset.durationLabel.isEmpty ? '视频' : asset.durationLabel,
+                                style: const TextStyle(color: DeskColors.paper, fontSize: 11),
+                              ),
+                            ),
                           ),
-                        ),
-                      ),
-                  ],
+                      ],
+                    ),
+                  ),
                 ),
-              ),
+                const SizedBox(height: 8),
+                SizedBox(
+                  height: 16,
+                  width: double.infinity,
+                  child: Text(
+                    caption,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(color: DeskColors.ink, fontSize: 12, fontWeight: FontWeight.w600),
+                  ),
+                ),
+              ],
             ),
-            const SizedBox(height: 8),
-            SizedBox(
-              height: 16,
-              width: double.infinity,
-              child: Text(
-                caption,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(color: DeskColors.ink, fontSize: 12, fontWeight: FontWeight.w600),
-              ),
+          ),
+        );
+
+        if (holiday == null) return card;
+
+        return Stack(
+          clipBehavior: Clip.none,
+          children: [
+            card,
+            HolidayStickerWidget.forPolaroid(
+              holiday: holiday!,
+              seed: '${asset.id}-polaroid',
+              cardWidth: constraints.maxWidth,
+              cardHeight: constraints.maxHeight,
             ),
           ],
-        ),
-      ),
+        );
+      },
     );
   }
 }

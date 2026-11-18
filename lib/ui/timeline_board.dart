@@ -209,6 +209,7 @@ class _TimelineBoardState extends State<TimelineBoard> with SingleTickerProvider
   Widget build(BuildContext context) {
     final scroll = widget.controller.viewport.scrollX;
     final ppd = widget.controller.viewport.pixelsPerDay;
+    final resolution = widget.controller.resolutionFor(widget.trackHeight);
     final held = _zoomHold ? _heldBatches : null;
     final source = held ?? widget.batches;
     final xScale = held == null || _heldPpd <= 0 ? 1.0 : ppd / _heldPpd;
@@ -269,6 +270,7 @@ class _TimelineBoardState extends State<TimelineBoard> with SingleTickerProvider
                   opacity: 1,
                   scale: 1,
                   onTap: () => _handleTap(batch),
+                  resolution: resolution,
                 )
             else ...[
               for (final card in under)
@@ -283,6 +285,7 @@ class _TimelineBoardState extends State<TimelineBoard> with SingleTickerProvider
                     opacity: poseOf(card, _poseT).opacity,
                     scale: poseOf(card, _poseT).scale,
                     onTap: () {},
+                    resolution: resolution,
                   ),
               for (final card in over)
                 if (_flightOnScreen(card, scroll, ppd, widget.viewWidth))
@@ -296,6 +299,7 @@ class _TimelineBoardState extends State<TimelineBoard> with SingleTickerProvider
                     opacity: poseOf(card, _poseT).opacity,
                     scale: poseOf(card, _poseT).scale,
                     onTap: () {},
+                    resolution: resolution,
                   ),
             ],
             if (!widget.controller.loading && widget.batches.isEmpty)
@@ -339,6 +343,7 @@ class _TimelineBoardState extends State<TimelineBoard> with SingleTickerProvider
     required double opacity,
     required double scale,
     required VoidCallback onTap,
+    required TimeResolution resolution,
   }) {
     final shown = opacity.clamp(0.0, 1.0).toDouble();
     return Positioned(
@@ -353,7 +358,7 @@ class _TimelineBoardState extends State<TimelineBoard> with SingleTickerProvider
           opacity: shown,
           child: Transform.scale(
             scale: scale,
-            child: BatchStack(batch: batch, onTap: onTap),
+            child: BatchStack(batch: batch, onTap: onTap, resolution: resolution),
           ),
         ),
       ),
