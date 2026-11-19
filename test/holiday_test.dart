@@ -36,6 +36,65 @@ void main() {
       expect(boxingDay, isNull);
     });
 
+    test('LunarHoliday matches traditional Chinese holidays across years', () {
+      // 2024:
+      // 春节: 2024-02-10 (正月初一)
+      final spring2024 = HolidayRegistry.findHolidayForDate(DateTime(2024, 2, 10, 9, 0));
+      expect(spring2024?.id, 'spring_festival');
+      expect(spring2024?.name, '农历春节');
+
+      // 端午: 2024-06-10 (五月初五)
+      final dragon2024 = HolidayRegistry.findHolidayForDate(DateTime(2024, 6, 10, 18, 0));
+      expect(dragon2024?.id, 'dragon_boat');
+      expect(dragon2024?.name, '端午节');
+
+      // 中秋: 2024-09-17 (八月十五)
+      final autumn2024 = HolidayRegistry.findHolidayForDate(DateTime(2024, 9, 17, 20, 0));
+      expect(autumn2024?.id, 'mid_autumn');
+      expect(autumn2024?.name, '中秋节');
+
+      // 2025:
+      // 春节: 2025-01-29
+      final spring2025 = HolidayRegistry.findHolidayForDate(DateTime(2025, 1, 29, 0, 0));
+      expect(spring2025?.id, 'spring_festival');
+
+      // 端午: 2025-05-31
+      final dragon2025 = HolidayRegistry.findHolidayForDate(DateTime(2025, 5, 31, 12, 0));
+      expect(dragon2025?.id, 'dragon_boat');
+
+      // 中秋: 2025-10-06
+      final autumn2025 = HolidayRegistry.findHolidayForDate(DateTime(2025, 10, 6, 21, 30));
+      expect(autumn2025?.id, 'mid_autumn');
+
+      // 2026:
+      // 春节: 2026-02-17
+      final spring2026 = HolidayRegistry.findHolidayForDate(DateTime(2026, 2, 17));
+      expect(spring2026?.id, 'spring_festival');
+
+      // Normal days near holidays do not match
+      expect(HolidayRegistry.findHolidayForDate(DateTime(2024, 2, 9)), isNull);
+      expect(HolidayRegistry.findHolidayForDate(DateTime(2024, 2, 11)), isNull);
+      expect(HolidayRegistry.findHolidayForDate(DateTime(2024, 6, 9)), isNull);
+      expect(HolidayRegistry.findHolidayForDate(DateTime(2024, 9, 16)), isNull);
+    });
+
+    test('LunarHoliday overlapsRange detects ranges covering lunar holidays', () {
+      final dragonBoat = HolidayRegistry.holidays.firstWhere((h) => h.id == 'dragon_boat');
+      // Week range covering June 10, 2024 (Dragon Boat Festival)
+      expect(dragonBoat.overlapsRange(DateTime(2024, 6, 8), DateTime(2024, 6, 15)), isTrue);
+      // Week range before Dragon Boat
+      expect(dragonBoat.overlapsRange(DateTime(2024, 6, 1), DateTime(2024, 6, 8)), isFalse);
+
+      final midAutumn = HolidayRegistry.holidays.firstWhere((h) => h.id == 'mid_autumn');
+      // 3-day range covering Sept 17, 2024 (Mid-Autumn)
+      expect(midAutumn.overlapsRange(DateTime(2024, 9, 16), DateTime(2024, 9, 19)), isTrue);
+      expect(midAutumn.overlapsRange(DateTime(2024, 9, 18), DateTime(2024, 9, 21)), isFalse);
+
+      final springFestival = HolidayRegistry.holidays.firstWhere((h) => h.id == 'spring_festival');
+      // 1-day range covering Jan 29, 2025
+      expect(springFestival.overlapsRange(DateTime(2025, 1, 29), DateTime(2025, 1, 30)), isTrue);
+    });
+
     test('Holiday overlapsRange handles single days, intervals and year boundaries', () {
       // Christmas: Dec 25
       final christmas = HolidayRegistry.holidays.firstWhere((h) => h.id == 'christmas');
@@ -196,12 +255,15 @@ void main() {
 
   group('Extensibility and variant selection', () {
     test('Variant index is always 1, 2, or 3 and generates correct asset path', () {
-      final christmas = HolidayRegistry.holidays.firstWhere((h) => h.id == 'christmas');
-      for (var i = 0; i < 20; i++) {
-        final variant = christmas.variantForSeed('seed-$i');
-        expect(variant, inInclusiveRange(1, 3));
-        final path = christmas.assetPath(variant);
-        expect(path, matches(RegExp(r'^assets/holidays/christmas_[123]\.png$')));
+      final holidays = ['christmas', 'halloween', 'new_year', 'spring_festival', 'dragon_boat', 'mid_autumn'];
+      for (final id in holidays) {
+        final holiday = HolidayRegistry.holidays.firstWhere((h) => h.id == id);
+        for (var i = 0; i < 10; i++) {
+          final variant = holiday.variantForSeed('seed-$i');
+          expect(variant, inInclusiveRange(1, 3));
+          final path = holiday.assetPath(variant);
+          expect(path, matches(RegExp('^assets/holidays/${holiday.assetPrefix}_[123]\\.png\$')));
+        }
       }
     });
 
