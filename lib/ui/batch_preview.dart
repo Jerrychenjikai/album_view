@@ -75,6 +75,18 @@ class _BatchPreviewState extends State<BatchPreview> with TickerProviderStateMix
   String? _originFor;
   String? _originPath;
   int _originTicket = 0;
+  Map<String, Holiday>? _decorations;
+
+  Map<String, Holiday> get _decorationsMap =>
+      _decorations ??= HolidayRegistry.decoratedAssetsForBatch(widget.items);
+
+  @override
+  void didUpdateWidget(BatchPreview oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!identical(oldWidget.items, widget.items)) {
+      _decorations = null;
+    }
+  }
 
   @override
   void initState() {
@@ -203,6 +215,7 @@ class _BatchPreviewState extends State<BatchPreview> with TickerProviderStateMix
               caption: _frontCaption(asset),
               locateLabel: widget.locateLabel,
               locateKey: _locateKey(asset.id),
+              holiday: _decorationsMap[asset.id],
             ),
           ),
         ),
@@ -773,6 +786,7 @@ class _Polaroid extends StatelessWidget {
   final String caption;
   final String locateLabel;
   final GlobalKey locateKey;
+  final Holiday? holiday;
 
   const _Polaroid({
     required this.asset,
@@ -780,11 +794,11 @@ class _Polaroid extends StatelessWidget {
     required this.caption,
     required this.locateLabel,
     required this.locateKey,
+    this.holiday,
   });
 
   @override
   Widget build(BuildContext context) {
-    final holiday = HolidayRegistry.holidayForPreviewAsset(asset);
     final reduce = MediaQuery.disableAnimationsOf(context);
     return _Flip(
       flipped: flipped,

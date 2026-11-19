@@ -123,8 +123,8 @@ class HolidayRegistry {
     ),
   ];
 
-  /// Probability of displaying a decoration on a holiday photo in batch preview (20%).
-  static double previewStickerProbability = 0.20;
+  /// Probability of displaying a decoration on a holiday photo in batch preview (30%).
+  static double previewStickerProbability = 0.30;
 
   /// Checks whether [resolution] is less than or equal to 1 week (<= 7 days).
   static bool isResolutionEligible(TimeResolution resolution) {
@@ -166,9 +166,65 @@ class HolidayRegistry {
     return null;
   }
 
+  /// Computes which assets in [batchItems] should display a holiday decoration in batch preview.
+  /// Rule:
+  /// - Base probability is 30% for photos taken on a holiday's day.
+  /// - If the batch contains photos taken on a holiday's day, guarantees at least one contains a decoration.
+  static Map<String, Holiday> decoratedAssetsForBatch(
+    List<MediaAsset> batchItems, {
+    double? probability,
+  }) {
+    final prob = probability ?? previewStickerProbability;
+    final result = <String, Holiday>{};
+
+    // Group assets by holiday (ignoring non-holiday photos)
+    final holidayGroups = <Holiday, List<MediaAsset>>{};
+    for (final asset in batchItems) {
+      final holiday = findHolidayForDate(asset.createdAt);
+      if (holiday != null) {
+        holidayGroups.putIfAbsent(holiday, () => []).add(asset);
+      }
+    }
+
+    for (final entry in holidayGroups.entries) {
+      final holiday = entry.key;
+      final assets = entry.value;
+      if (assets.isEmpty) continue;
+
+      MediaAsset? bestFallbackAsset;
+      double minChance = double.infinity;
+      var decoratedInGroup = 0;
+
+      for (final asset in assets) {
+        final chance = unitHash('${asset.id}-holiday-preview-chance');
+        if (chance < minChance) {
+          minChance = chance;
+          bestFallbackAsset = asset;
+        }
+        if (chance < prob) {
+          result[asset.id] = holiday;
+          decoratedInGroup++;
+        }
+      }
+
+      // Guarantee: if this batch contains photos of this holiday, at least one must have decoration.
+      if (decoratedInGroup == 0 && bestFallbackAsset != null) {
+        result[bestFallbackAsset.id] = holiday;
+      }
+    }
+
+    return result;
+  }
+
   /// Checks if [asset] in batch preview should display a holiday decoration.
-  /// Rule: Photo must be taken on the holiday's day, with 20% probability.
-  static Holiday? holidayForPreviewAsset(MediaAsset asset) {
+  /// Rule: Photo must be taken on the holiday's day, with 30% probability.
+  /// If [batchItems] is provided, also enforces the guarantee that at least one photo
+  /// taken on that holiday in the batch receives a decoration.
+  static Holiday? holidayForPreviewAsset(MediaAsset asset, {List<MediaAsset>? batchItems}) {
+    if (batchItems != null && batchItems.isNotEmpty) {
+      final map = decoratedAssetsForBatch(batchItems);
+      return map[asset.id];
+    }
     final holiday = findHolidayForDate(asset.createdAt);
     if (holiday == null) return null;
 

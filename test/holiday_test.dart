@@ -112,7 +112,11 @@ void main() {
     });
   });
 
-  group('Batch preview polaroid decoration rules (20% probability)', () {
+  group('Batch preview polaroid decoration rules (30% probability and batch guarantee)', () {
+    test('previewStickerProbability is set to 30%', () {
+      expect(HolidayRegistry.previewStickerProbability, 0.30);
+    });
+
     test('Non-holiday photos never show decoration', () {
       for (var i = 0; i < 50; i++) {
         final asset = _sampleAsset('norm_$i', DateTime(2024, 7, 10, 12, i));
@@ -120,7 +124,7 @@ void main() {
       }
     });
 
-    test('Holiday photos show decoration with ~20% probability and stable result per asset', () {
+    test('Holiday photos show decoration with ~30% base probability and stable result per asset', () {
       var decoratedCount = 0;
       const total = 500;
       for (var i = 0; i < total; i++) {
@@ -135,10 +139,58 @@ void main() {
         }
       }
 
-      // 20% of 500 is 100. Allow reasonable statistical variance (+- 35)
+      // 30% of 500 is 150. Allow reasonable statistical variance (+- 45)
       final fraction = decoratedCount / total;
-      expect(fraction, greaterThan(0.13));
-      expect(fraction, lessThan(0.27));
+      expect(fraction, greaterThan(0.22));
+      expect(fraction, lessThan(0.38));
+    });
+
+    test('Batch containing holiday photo guarantees at least one decorated photo', () {
+      // Find an asset ID whose hash is >= 0.30 (would normally NOT be decorated)
+      MediaAsset? highHashAsset;
+      for (var i = 0; i < 100; i++) {
+        final asset = _sampleAsset('candidate_$i', DateTime(2024, 12, 25, 10, 0));
+        if (HolidayRegistry.holidayForPreviewAsset(asset) == null) {
+          highHashAsset = asset;
+          break;
+        }
+      }
+      expect(highHashAsset, isNotNull);
+
+      // Single photo in batch: normally wouldn't get a sticker, but batch guarantee forces at least one!
+      final singleBatch = [highHashAsset!];
+      final decorations = HolidayRegistry.decoratedAssetsForBatch(singleBatch);
+      expect(decorations.length, 1);
+      expect(decorations[highHashAsset.id]?.id, 'christmas');
+
+      // Test holidayForPreviewAsset with batchItems passed
+      expect(
+        HolidayRegistry.holidayForPreviewAsset(highHashAsset, batchItems: singleBatch)?.id,
+        'christmas',
+      );
+    });
+
+    test('Batch with mixed normal and holiday photos decorates holiday photos, never normal photos', () {
+      final normalAsset1 = _sampleAsset('norm_1', DateTime(2024, 6, 1));
+      final normalAsset2 = _sampleAsset('norm_2', DateTime(2024, 6, 2));
+      final holidayAsset = _sampleAsset('xmas_1', DateTime(2024, 12, 25, 8, 0));
+
+      final batch = [normalAsset1, normalAsset2, holidayAsset];
+      final decorations = HolidayRegistry.decoratedAssetsForBatch(batch);
+
+      expect(decorations.containsKey('norm_1'), isFalse);
+      expect(decorations.containsKey('norm_2'), isFalse);
+      expect(decorations.containsKey('xmas_1'), isTrue);
+      expect(decorations['xmas_1']?.id, 'christmas');
+    });
+
+    test('Batch with 0 holiday photos produces empty decorations', () {
+      final batch = [
+        _sampleAsset('a1', DateTime(2024, 5, 1)),
+        _sampleAsset('a2', DateTime(2024, 5, 2)),
+      ];
+      final decorations = HolidayRegistry.decoratedAssetsForBatch(batch);
+      expect(decorations, isEmpty);
     });
   });
 
